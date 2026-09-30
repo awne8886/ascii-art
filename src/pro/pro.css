@@ -643,6 +643,15 @@
   position: relative;
   min-width: 0;
   min-height: 0;
+  container-type: size;
+}
+
+/* A narrow stage has no room for the zoom beside the dock: it moves up. */
+@container (max-width: 820px) {
+  .stage-pro .zoom {
+    top: 8px;
+    bottom: auto;
+  }
 }
 
 .viewport-frame {
@@ -2960,7 +2969,13 @@ kbd {
   }
 }
 
-/* ── Narrow screens: rail on top, inspector as a bottom sheet ── */
+@media (max-width: 1200px) {
+  .pro {
+    --insp-w: 344px;
+  }
+}
+
+/* ── Narrow screens: rail on top, inspector under the stage ── */
 
 @media (max-width: 900px) {
   .pro,
