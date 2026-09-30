@@ -24,8 +24,6 @@ export class LiveSubject {
   seq = 0;
   error: string | null = null;
   backend = '';
-  /** Read before each request, so switching method takes effect on the next frame. */
-  method: SegmentMethod;
 
   private run = 0;
   private asked = 0;
@@ -34,12 +32,11 @@ export class LiveSubject {
   constructor(
     private readonly layerId: string,
     private readonly el: HTMLVideoElement,
-    method: SegmentMethod,
+    /** Another method takes another LiveSubject (the store starts one). */
+    readonly method: SegmentMethod,
     /** Called with every new mask, and when an error appears or clears. */
     private readonly onChange: (what: 'mask' | 'error') => void,
-  ) {
-    this.method = method;
-  }
+  ) {}
 
   get running(): boolean {
     return this.run > 0;
@@ -81,7 +78,8 @@ export class LiveSubject {
       try {
         const lane = `live:${this.layerId}`;
         const input = { rgba: image.data, width: image.width, height: image.height };
-        const r = await segment(`${lane}:${++this.asked}`, input, this.method, undefined, lane);
+        // Keys unique to this run: a stopped one's request still in flight is never shared.
+        const r = await segment(`${lane}:${run}:${++this.asked}`, input, this.method, undefined, lane);
         if (!alive()) return;
         this.previous = this.latest;
         this.latest = {

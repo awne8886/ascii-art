@@ -21,7 +21,22 @@ const STD = [0.229, 0.224, 0.225];
 const CACHE = 'ascii-art-models-v1';
 
 let ortPromise: Promise<typeof Ort> | null = null;
-const sessions = new Map<string, Promise<Ort.InferenceSession>>();
+
+interface ModelFile {
+  bytes: ArrayBuffer;
+  gpu: boolean;
+}
+
+/** A model file on its way, and how many requests wait on it. */
+interface Download {
+  file: Promise<ModelFile>;
+  waiting: number;
+}
+
+/** Model files downloading (or downloaded, until their session starts or nothing waits on them), per model. */
+const files = new Map<ModelId, Download>();
+/** Sessions started (or starting), per model. */
+const sessions = new Map<ModelId, Promise<{ s: Ort.InferenceSession; backend: 'webgpu' | 'wasm' }>>();
 
 function post(msg: SegmentResponse, transfer: Transferable[] = []): void {
   self.postMessage(msg, transfer);
@@ -94,32 +109,69 @@ async function fetchModel(url: string, id: number, mb: number): Promise<ArrayBuf
   return buf.buffer;
 }
 
-async function session(model: ModelId, id: number): Promise<{ s: Ort.InferenceSession; backend: 'webgpu' | 'wasm' }> {
-  const ort = await loadOrt();
-  const spec = MODELS[model];
-  const support = spec.webgpu ? await webGpu() : 'none';
-  const variant = support === 'fp16' ? spec.webgpu : support === 'fp32' ? (spec.webgpuFp32 ?? spec.webgpu) : spec.wasm;
-  if (!variant) {
-    throw new Error(
-      'The high-quality model needs WebGPU (a recent Chrome, Edge or Safari), which isn’t available here.',
-    );
-  }
-  const gpu = variant !== spec.wasm;
-  const key = `${model}:${variant.file}`;
-  let p = sessions.get(key);
+/**
+ * The model's file for this browser (fp16 or fp32 on the GPU, else WebAssembly), downloaded once for every
+ * request that waits on it. A failed download fails those; the next request to arrive tries again.
+ */
+function download(model: ModelId, id: number): Download {
+  const had = files.get(model);
+  if (had) return had;
+  const file = (async () => {
+    const spec = MODELS[model];
+    const support = spec.webgpu ? await webGpu() : 'none';
+    const variant =
+      support === 'fp16' ? spec.webgpu : support === 'fp32' ? (spec.webgpuFp32 ?? spec.webgpu) : spec.wasm;
+    if (!variant) {
+      throw new Error(
+        'The high-quality model needs WebGPU (a recent Chrome, Edge or Safari), which isn’t available here.',
+      );
+    }
+    const bytes = await fetchModel(modelUrl(spec, variant.file), id, variant.mb);
+    return { bytes, gpu: variant !== spec.wasm };
+  })();
+  const dl: Download = { file, waiting: 0 };
+  files.set(model, dl);
+  file.catch(() => release(model, dl));
+  return dl;
+}
+
+/** Let go of a model file's bytes (a later request downloads it again, from the cache, if it must). */
+function release(model: ModelId, dl: Download): void {
+  if (files.get(model) === dl) files.delete(model);
+}
+
+/** The model's session, started from `dl` (the file the request waited for) the first time. */
+async function session(
+  model: ModelId,
+  id: number,
+  dl: Download | null,
+): Promise<{ s: Ort.InferenceSession; backend: 'webgpu' | 'wasm' }> {
+  let p = sessions.get(model);
   if (!p) {
-    p = (async () => {
-      const bytes = await fetchModel(modelUrl(spec, variant.file), id, variant.mb);
+    const from = dl ?? download(model, id);
+    const q = (async () => {
+      const { bytes, gpu } = await from.file;
       post({ type: 'progress', id, phase: 'init' });
-      return ort.InferenceSession.create(new Uint8Array(bytes), {
+      const ort = await loadOrt();
+      const s = await ort.InferenceSession.create(new Uint8Array(bytes), {
         executionProviders: gpu ? ['webgpu', 'wasm'] : ['wasm'],
         graphOptimizationLevel: 'all',
       });
+      return { s, backend: gpu ? ('webgpu' as const) : ('wasm' as const) };
     })();
-    sessions.set(key, p);
-    p.catch(() => sessions.delete(key));
+    sessions.set(model, q);
+    // Started or not, the file's bytes aren't needed any more; a session that failed to start is tried again
+    // by the next request.
+    q.then(
+      () => release(model, from),
+      () => {
+        release(model, from);
+        if (sessions.get(model) === q) sessions.delete(model);
+      },
+    );
+    p = q;
   }
-  return { s: await p, backend: gpu ? 'webgpu' : 'wasm' };
+  return p;
 }
 
 /** Bilinear resize to size×size (stretching, as both models were trained) and ImageNet normalisation, planar. */
@@ -135,10 +187,14 @@ function preprocess(rgba: Uint8ClampedArray, w: number, h: number, size: number)
   return out;
 }
 
-async function runModel(model: ModelId, req: SegmentRequest): Promise<{ mask: Float32Array; backend: string }> {
+async function runModel(
+  model: ModelId,
+  req: SegmentRequest,
+  dl: Download | null,
+): Promise<{ mask: Float32Array; backend: string }> {
   const ort = await loadOrt();
   const spec = MODELS[model];
-  const { s, backend } = await session(model, req.id);
+  const { s, backend } = await session(model, req.id, dl);
   post({ type: 'progress', id: req.id, phase: 'infer' });
 
   const input = preprocess(req.rgba, req.width, req.height, spec.size);
@@ -164,7 +220,7 @@ async function runModel(model: ModelId, req: SegmentRequest): Promise<{ mask: Fl
   return { mask: resizeBilinear(vals, spec.size, spec.size, req.width, req.height), backend };
 }
 
-async function handle(req: SegmentRequest): Promise<void> {
+async function handle(req: SegmentRequest, dl: Download | null = null): Promise<void> {
   const started = performance.now();
   try {
     let coarse: Float32Array;
@@ -172,7 +228,7 @@ async function handle(req: SegmentRequest): Promise<void> {
     if (req.method === 'classic') {
       coarse = classicSaliency(req.rgba, req.width, req.height);
     } else {
-      ({ mask: coarse, backend } = await runModel(req.method, req));
+      ({ mask: coarse, backend } = await runModel(req.method, req, dl));
     }
     post({ type: 'progress', id: req.id, phase: 'refine' });
     const r = Math.max(2, Math.round(Math.max(req.width, req.height) / 128));
@@ -208,7 +264,21 @@ self.onmessage = (e: MessageEvent<SegmentRequest>) => {
     void handle(req);
     return;
   }
-  queue = queue.then(() =>
-    lanes.superseded(req.lane, req.id) ? post({ type: 'error', id: req.id, message: SUPERSEDED }) : handle(req),
-  );
+  // A request queues once its model is downloaded, so one for another model (or Classic) never waits
+  // behind a download it doesn't need; requests for the same model wait on the same one, in order.
+  const model = req.method;
+  const dl = sessions.has(model) ? null : download(model, req.id);
+  if (dl) dl.waiting++;
+  const enqueue = () => {
+    queue = queue
+      .then(() =>
+        lanes.superseded(req.lane, req.id) ? post({ type: 'error', id: req.id, message: SUPERSEDED }) : handle(req, dl),
+      )
+      .finally(() => {
+        // The last request waiting on a file that never started a session (all overtaken) lets it go.
+        if (dl && --dl.waiting === 0) release(model, dl);
+      });
+  };
+  if (dl) void dl.file.then(enqueue, enqueue);
+  else enqueue();
 };

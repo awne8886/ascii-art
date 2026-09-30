@@ -1,11 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { defaultSubject, newEffect, newLayer, type EffectInstance, type Layer } from '../model';
+import {
+  defaultSubject,
+  looksKeyFor,
+  newEffect,
+  newLayer,
+  newProject,
+  type EffectInstance,
+  type Layer,
+  type Project,
+  type SubjectKey,
+} from '../model';
+import { setEffects } from '../store';
 import { type AnalysisOutcome, type SubjectStore } from '../subject/store';
 import { type SubjectInfo, type SubjectStatus } from '../subject/types';
 import {
   analysesItself,
   canAnalyse,
   COMPOSITIONS,
+  compositionFor,
   compositionOf,
   compositionSettings,
   jobText,
@@ -70,11 +82,51 @@ describe('compositions', () => {
     expect(COMPOSITIONS.filter((x) => x !== c).every((x) => x.looksKey === 'off')).toBe(true);
   });
 
-  it('tells presets apart by the key', () => {
+  it('tells presets apart by the key being on, whichever background it drops', () => {
     const on = { show: 'all', looks: 'subject', looksBlend: 0 } as const;
     expect(compositionOf({ ...on, looksKey: 'off' })?.label).toBe('Look on subject');
     expect(compositionOf({ ...on, looksKey: 'dark' })?.label).toBe('Characters over subject');
-    expect(compositionOf({ ...on, looksKey: 'light' })).toBeUndefined();
+    expect(compositionOf({ ...on, looksKey: 'light' })?.label).toBe('Characters over subject');
+  });
+
+  it('drops the background the looks have: dark paper or light', () => {
+    expect(looksKeyFor([newEffect('ascii')])).toBe('dark');
+    expect(looksKeyFor([newEffect('halftone')])).toBe('light');
+    expect(looksKeyFor([newEffect('dither-text')])).toBe('light');
+    expect(looksKeyFor([newEffect('ascii', 'Ink on paper')])).toBe('light');
+    expect(looksKeyFor([newEffect('halftone', 'Pop dots')])).toBe('dark');
+    // No looks (or none on): dark, like most type looks.
+    expect(looksKeyFor([])).toBe('dark');
+    expect(looksKeyFor([{ ...newEffect('halftone'), enabled: false }])).toBe('dark');
+    // The top look is what the key sees.
+    expect(looksKeyFor([newEffect('halftone'), newEffect('ascii')])).toBe('dark');
+    expect(looksKeyFor([newEffect('ascii'), newEffect('halftone')])).toBe('light');
+    expect(looksKeyFor([look({ params: { ...look().params, paper: '#ffffff' } })])).toBe('light');
+  });
+
+  it('the characters preset keys out the looks’ own paper', () => {
+    const c = COMPOSITIONS.find((x) => x.label === 'Characters over subject')!;
+    expect(compositionFor(c, [newEffect('ascii')]).looksKey).toBe('dark');
+    expect(compositionFor(c, [newEffect('halftone')]).looksKey).toBe('light');
+    const plain = COMPOSITIONS.find((x) => x.label === 'Look on subject')!;
+    expect(compositionFor(plain, [newEffect('halftone')]).looksKey).toBe('off');
+  });
+
+  it('a key that suits the looks follows them; one set against them stays', () => {
+    const layer = (looksKey: SubjectKey, effects: EffectInstance[]): Layer => ({
+      ...withSubject(newLayer('sample', 'Sample clip', { id: 'L1' }), { on: true, looksKey }),
+      effects,
+    });
+    const project = (l: Layer): Project => ({ ...newProject(), layers: [l] });
+    const keyAfter = (l: Layer, fx: EffectInstance[]) =>
+      setEffects('L1', () => fx)(project(l)).layers[0]!.subject!.looksKey;
+    expect(keyAfter(layer('dark', [newEffect('ascii')]), [newEffect('halftone')])).toBe('light');
+    expect(keyAfter(layer('light', [newEffect('halftone')]), [newEffect('ascii')])).toBe('dark');
+    // Added to a layer with no looks yet.
+    expect(keyAfter(layer('dark', []), [newEffect('halftone')])).toBe('light');
+    // Set against the looks on purpose, or off: left alone.
+    expect(keyAfter(layer('dark', [newEffect('halftone')]), [newEffect('dither-text')])).toBe('dark');
+    expect(keyAfter(layer('off', [newEffect('ascii')]), [newEffect('halftone')])).toBe('off');
   });
 
   it('an older saved subject (no key) reads as keyed off', () => {

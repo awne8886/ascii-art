@@ -15,6 +15,7 @@ export interface SegmentResult {
 }
 
 interface Pending {
+  method: SegmentMethod;
   resolve: (r: SegmentResult) => void;
   reject: (e: Error) => void;
   listeners: Set<(p: SegmentProgress) => void>;
@@ -32,10 +33,13 @@ function getWorker(): Worker {
   w.onmessage = (e: MessageEvent<SegmentResponse>) => {
     const msg = e.data;
     if (msg.type === 'progress') {
-      // The worker runs one request at a time, and whoever waits behind it waits on the same download:
-      // everyone hears the progress.
+      // Requests for the same model wait on the same download and start-up: they all hear the progress
+      // (requests for another model, or Classic, don't wait on it).
       const progress = { phase: msg.phase, loaded: msg.loaded, total: msg.total };
-      pending.forEach((p) => p.listeners.forEach((l) => l(progress)));
+      const from = pending.get(msg.id)?.method;
+      pending.forEach((p) => {
+        if (p.method === from) p.listeners.forEach((l) => l(progress));
+      });
       return;
     }
     const p = pending.get(msg.id);
@@ -89,7 +93,7 @@ export function segment(
   const listeners = new Set<(p: SegmentProgress) => void>(onProgress ? [onProgress] : []);
   const req: SegmentRequest = { id, method, rgba: image.rgba, width: image.width, height: image.height, lane };
   const promise = new Promise<SegmentResult>((resolve, reject) => {
-    pending.set(id, { resolve, reject, listeners });
+    pending.set(id, { method, resolve, reject, listeners });
     getWorker().postMessage(req);
   });
   inflight.set(key, { promise, listeners });

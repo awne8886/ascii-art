@@ -114,6 +114,24 @@ export function defaultSubject(): SubjectSettings {
   };
 }
 
+/** A look's colour settings that are its own background (the key drops it). */
+const LOOK_BACKGROUNDS = ['paper', 'bg', 'board', 'fabric'];
+
+/**
+ * The key that drops the looks' own background: 'light' when the top look
+ * (the last one on: what the key sees) is drawn on light paper, else 'dark'.
+ */
+export function looksKeyFor(effects: readonly EffectInstance[]): 'dark' | 'light' {
+  const top = [...effects].reverse().find((e) => e.enabled && e.strength > 0 && effectById(e.effectId));
+  const def = top && effectById(top.effectId);
+  const p = def?.params.find((q) => q.type === 'color' && LOOK_BACKGROUNDS.includes(q.key));
+  const hex = top && p ? String(top.params[p.key] ?? p.default) : '';
+  if (!/^#[0-9a-f]{6}$/i.test(hex)) return 'dark';
+  const n = parseInt(hex.slice(1), 16);
+  const luma = (0.2126 * (n >> 16) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255;
+  return luma > 0.5 ? 'light' : 'dark';
+}
+
 /** A layer riding along with another layer's tracked object. */
 export interface Follow {
   layerId: string;

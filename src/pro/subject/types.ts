@@ -82,4 +82,10 @@ export interface SubjectInfo {
   ms?: number;
   error?: string;
   job?: SubjectJob;
+  /**
+   * Why it's stale: 'range' when only more of the clip shows now than was
+   * analysed (a longer canvas, a trim), else 'settings'. While running:
+   * 'range' when the analysis under way won't cover what shows now either.
+   */
+  reason?: 'range' | 'settings';
 }

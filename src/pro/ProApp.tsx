@@ -20,6 +20,7 @@ import {
 import { SAMPLE_DURATION } from './sources';
 import { addLayer, removeLayer, updateLayer, useStudio } from './store';
 import { clearSavedProject, loadProject, saveMediaFile, saveProject } from './storage';
+import { analysisRange } from './subject/masks';
 import { SubjectStore } from './subject/store';
 import { TEMPLATES, type Template } from './templates';
 import { PanelTitle } from './ui/controls';
@@ -39,7 +40,7 @@ import {
   type SceneOptions,
 } from './ui/panels';
 import { AddPanel, LayersPanel } from './ui/rail';
-import { SubjectPanel } from './ui/SubjectPanel';
+import { analysesItself, refreshSubject, startAnalysis, SubjectPanel } from './ui/SubjectPanel';
 import { Timeline } from './ui/Timeline';
 import { Viewport, type Zoom } from './ui/Viewport';
 import './pro.css';
@@ -115,6 +116,26 @@ export function ProApp() {
   // Undo / redo can remove a layer, switch its subject off or restore other settings: analyses that no
   // longer fit stop. Also keeps the store up with the canvas's length.
   useEffect(() => subjects.sync(project), [project, subjects]);
+  // A longer canvas or a trim can show more of a clip than was analysed: layers that analyse by themselves
+  // (AI · fast, Classic) analyse again once the edit settles. Stopping that holds until the range changes again.
+  const autoRange = useRef(new Map<string, string>());
+  useEffect(() => {
+    const t = setTimeout(() => {
+      for (const l of project.layers) {
+        const info = subjects.info(l);
+        if (!analysesItself(l) || info.reason !== 'range') continue;
+        if (info.status !== 'stale' && info.status !== 'running') continue;
+        const d = layerMediaDuration(l, media);
+        if (d === null) continue;
+        const r = analysisRange(l, d, project.canvas.duration);
+        const key = `${r.from}|${r.to}`;
+        if (autoRange.current.get(l.id) === key) continue;
+        autoRange.current.set(l.id, key);
+        startAnalysis(subjects, l, setToast);
+      }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [project, subjects, media]);
 
   useEffect(() => {
     if (!toast) return;
@@ -287,9 +308,11 @@ export function ProApp() {
     };
     copy.effects = copy.effects.map((e) => ({ ...e, uid: uid('fx') }));
     copy.motion = copy.motion.map((m) => ({ ...m, uid: uid('mo') }));
-    // The copy starts with the original's separated subject.
+    // The copy starts with the original's masks when it has any. When those don't fit (the original was still
+    // being analysed, or its masks are out of date), the copy analyses by itself, like any layer switched on.
     subjects.copy(layer.id, copy);
     studio.commit(addLayer(copy), undefined, copy.id);
+    refreshSubject(subjects, copy, setToast);
   }, [layer, media, studio, subjects]);
 
   // ─── Tracking ────────────────────────────────────────────────────────────

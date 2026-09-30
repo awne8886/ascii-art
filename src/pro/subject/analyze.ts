@@ -97,8 +97,8 @@ export async function analyzeSubject(
     return { phase: 'analyse', progress: base + (1 - base) * (done / count), done, count };
   };
   const onSegment = (p: SegmentProgress) => {
-    // Classic has no model: download / start-up progress is another job's (the worker is shared).
-    if (done > 0 || signal.aborted || s.method === 'classic') return;
+    // Download and start-up progress is this job's model's (the client passes each model's to its own requests).
+    if (done > 0 || signal.aborted) return;
     if (p.phase === 'download') {
       downloaded = true;
       const f = p.total ? Math.min(1, (p.loaded ?? 0) / p.total) : 0;

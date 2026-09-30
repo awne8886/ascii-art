@@ -4,6 +4,7 @@ import {
   analysisRange,
   analysisTimes,
   analysisWindow,
+  covers,
   fadeBorder,
   finalizeFrame,
   finishKey,
@@ -18,6 +19,7 @@ import {
   parseSequence,
   readRecord,
   sequenceFit,
+  staleReason,
   toRecord,
   trackSignature,
   wantedMeta,
@@ -351,6 +353,24 @@ describe('staleness', () => {
     expect(sequenceFit(onCanvas, wantedMeta(video(), 10, 2))).toBe('current');
     expect(sequenceFit(onCanvas, wantedMeta(video(), 10, 1))).toBe('current');
     expect(sequenceFit(onCanvas, wantedMeta(video(), 10))).toBe('stale');
+  });
+
+  it('says why: only more of the clip shows, or other settings', () => {
+    const have = wantedMeta(video(), 10, 2);
+    const sub = video().subject!;
+    // A longer canvas, a trim reaching further: the range.
+    expect(staleReason(have, wantedMeta(video(), 10, 4))).toBe('range');
+    expect(staleReason(have, wantedMeta(video({ in: 0.5 }), 10, 2))).toBe('range');
+    // Another method or rate (whatever the range): the settings.
+    expect(staleReason(have, wantedMeta(video({ subject: { ...sub, method: 'classic' } }), 10, 2))).toBe('settings');
+    expect(staleReason(have, wantedMeta(video({ subject: { ...sub, rate: 30 } }), 10, 4))).toBe('settings');
+  });
+
+  it('covers a range within the one analysed', () => {
+    expect(covers({ from: 1, to: 5 }, { from: 1, to: 5 })).toBe(true);
+    expect(covers({ from: 1, to: 5 }, { from: 2, to: 3 })).toBe(true);
+    expect(covers({ from: 1, to: 5 }, { from: 1, to: 6 })).toBe(false);
+    expect(covers({ from: 1, to: 5 }, { from: 0.5, to: 5 })).toBe(false);
   });
 
   it('tells other media apart', () => {

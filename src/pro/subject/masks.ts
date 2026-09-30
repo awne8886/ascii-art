@@ -331,9 +331,25 @@ export function sequenceFit(have: MaskMeta, want: MaskMeta): 'other-media' | 'st
   if (have.media !== want.media || have.kind !== want.kind) return 'other-media';
   if (have.method !== want.method || have.area !== want.area || have.track !== want.track) return 'stale';
   if (want.kind === 'image') return 'current';
-  const eps = 1e-3;
-  if (have.rate !== want.rate || have.from > want.from + eps || have.to < want.to - eps) return 'stale';
+  if (have.rate !== want.rate || !covers(have, want)) return 'stale';
   return 'current';
+}
+
+/** Whether media seconds analysed (from–to) take in the ones wanted (trimming shorter is fine). */
+export function covers(have: { from: number; to: number }, want: { from: number; to: number }): boolean {
+  const eps = 1e-3;
+  return have.from <= want.from + eps && have.to >= want.to - eps;
+}
+
+/**
+ * Why masks are stale (sequenceFit): analysed as the layer is set up, but
+ * for less of the clip than it now shows ('range': a longer canvas, a trim),
+ * or with other settings.
+ */
+export function staleReason(have: MaskMeta, want: MaskMeta): 'range' | 'settings' {
+  const same =
+    have.method === want.method && have.area === want.area && have.track === want.track && have.rate === want.rate;
+  return same ? 'range' : 'settings';
 }
 
 // ─── Storage ─────────────────────────────────────────────────────────────────

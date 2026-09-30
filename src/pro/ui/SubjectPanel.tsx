@@ -6,6 +6,7 @@ import { layerMediaDuration } from '../frames';
 import { type MediaStore } from '../media';
 import {
   defaultSubject,
+  looksKeyFor,
   newEffect,
   SEPARABLE_KINDS,
   SUBJECT_RATES,
@@ -87,13 +88,26 @@ export function compositionSettings(c: Composition): CompositionSettings {
 }
 
 /**
+ * A preset's settings for a layer with these looks: a preset that drops
+ * the looks' background drops the one they have (dark or light paper).
+ */
+export function compositionFor(c: Composition, effects: readonly EffectInstance[]): CompositionSettings {
+  return { ...compositionSettings(c), ...(c.looksKey !== 'off' && { looksKey: looksKeyFor(effects) }) };
+}
+
+/**
  * The preset a composition matches, if any. With only one part showing,
- * looks on that part are the same as looks everywhere.
+ * looks on that part are the same as looks everywhere; the key only counts
+ * as on or off (which background it drops follows the looks).
  */
 export function compositionOf(s: CompositionSettings): Composition | undefined {
   const looks = s.show !== 'all' && s.looks === s.show ? 'all' : s.looks;
   return COMPOSITIONS.find(
-    (c) => c.show === s.show && c.looks === looks && c.looksBlend === s.looksBlend && c.looksKey === s.looksKey,
+    (c) =>
+      c.show === s.show &&
+      c.looks === looks &&
+      c.looksBlend === s.looksBlend &&
+      (c.looksKey === 'off') === (s.looksKey === 'off'),
   );
 }
 
@@ -416,27 +430,6 @@ export function SubjectPanel({ studio, layer, media, subjects, toast, onOpenTrac
       {s.on && (
         <>
           <Group title="Composition" icon="mask" summary={preset?.label ?? 'Custom'}>
-            <div className="subjpresets" role="radiogroup" aria-label="Composition">
-              {COMPOSITIONS.map((c) => {
-                const on = c === preset;
-                return (
-                  <button
-                    key={c.label}
-                    type="button"
-                    role="radio"
-                    aria-checked={on}
-                    className={`subjpreset${on ? ' subjpreset--on' : ''}`}
-                    onClick={() => set(compositionSettings(c))}
-                  >
-                    <CompGlyph show={c.show} looks={c.looks} overlay={c.looksBlend !== 0 || c.looksKey !== 'off'} />
-                    <span className="subjpreset__text">
-                      <span className="subjpreset__name">{c.label}</span>
-                      <span className="subjpreset__desc">{c.hint.replace('{what}', what)}</span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
             {!looksOn && (
               <div className="subjnote">
                 <p className="muted small">
@@ -466,6 +459,27 @@ export function SubjectPanel({ studio, layer, media, subjects, toast, onOpenTrac
                 </button>
               </div>
             )}
+            <div className="subjpresets" role="radiogroup" aria-label="Composition">
+              {COMPOSITIONS.map((c) => {
+                const on = c === preset;
+                return (
+                  <button
+                    key={c.label}
+                    type="button"
+                    role="radio"
+                    aria-checked={on}
+                    className={`subjpreset${on ? ' subjpreset--on' : ''}`}
+                    onClick={() => set(compositionFor(c, layer.effects))}
+                  >
+                    <CompGlyph show={c.show} looks={c.looks} overlay={c.looksBlend !== 0 || c.looksKey !== 'off'} />
+                    <span className="subjpreset__text">
+                      <span className="subjpreset__name">{c.label}</span>
+                      <span className="subjpreset__desc">{c.hint.replace('{what}', what)}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
             <Segmented label="Show" value={s.show} options={PARTS('Everything')} onChange={(v) => set({ show: v })} />
             <Segmented
               label="Looks on"
@@ -679,7 +693,9 @@ function SubjectStatus({
       return (
         <>
           <p className="muted small">
-            Settings changed since the last analysis. The masks from before still show until it’s analysed again.
+            {info.reason === 'range'
+              ? 'More of the clip shows on the canvas now (a longer canvas, or a trim) than was analysed: there, the nearest mask holds until it’s analysed again.'
+              : 'Settings changed since the last analysis. The masks from before still show until it’s analysed again.'}
           </p>
           <button type="button" className="pbtn pbtn--block pbtn--primary" onClick={onAnalyse} disabled={!analysable}>
             <Icon name="play" size={12} /> Analyse again{hq ? ` · ${HQ_MB} MB` : ''}

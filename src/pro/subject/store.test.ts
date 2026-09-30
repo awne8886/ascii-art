@@ -174,8 +174,48 @@ describe('sync', () => {
     runs[0]!.finish(masksFor(l, 6));
     await run;
     expect(store.info(l)).toMatchObject({ status: 'ready', frames: 61, to: 6 });
-    // A longer canvas wants more of the clip.
+    // A longer canvas wants more of the clip: stale for that reason alone.
     store.sync(projectOf([l], 8));
-    expect(store.info(l).status).toBe('stale');
+    expect(store.info(l)).toMatchObject({ status: 'stale', reason: 'range' });
+    // Other settings are another reason.
+    expect(store.info(clip({ rate: 5 }))).toMatchObject({ status: 'stale', reason: 'settings' });
+  });
+
+  it('says when an analysis under way won’t cover what the canvas now shows', async () => {
+    const l = clip();
+    store.sync(projectOf([l], 6));
+    const run = store.analyze(l);
+    await settle();
+    expect(store.info(l)).toMatchObject({ status: 'running', reason: undefined });
+    store.sync(projectOf([l], 8));
+    expect(store.info(l)).toMatchObject({ status: 'running', reason: 'range' });
+    // A shorter canvas is fine: it covers that.
+    store.sync(projectOf([l], 4));
+    expect(store.info(l).reason).toBeUndefined();
+    store.cancel(l.id);
+    expect(await run).toBe('cancelled');
+  });
+});
+
+describe('snapshot', () => {
+  it('keeps the masks held when it was taken, whatever lands after', async () => {
+    const l = clip();
+    const p = projectOf([l]);
+    // Nothing yet: an export started now has no masks, even once the analysis lands.
+    const before = store.snapshot();
+    let run = store.analyze(l);
+    runs[0]!.finish(masksFor(l));
+    await run;
+    expect(before.maskAt(l, p, 1)).toBeNull();
+    const first = store.maskAt(l, p, 1)!;
+    expect(first).not.toBeNull();
+
+    // Analysed again while an export renders: the export keeps the masks from before.
+    const during = store.snapshot();
+    run = store.analyze(l);
+    runs[1]!.finish(masksFor(l));
+    await run;
+    expect(during.maskAt(l, p, 1)!.a.version).toBe(first.a.version);
+    expect(store.maskAt(l, p, 1)!.a.version).not.toBe(first.a.version);
   });
 });

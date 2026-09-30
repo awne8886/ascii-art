@@ -87,7 +87,9 @@ function subjectWarnings(
           ? 'still being analysed again'
           : info.status === 'error'
             ? 'couldn’t be analysed again'
-            : 'settings changed since the last analysis';
+            : info.reason === 'range'
+              ? 'analysed for less of the clip than shows now (there, its nearest mask holds)'
+              : 'settings changed since the last analysis';
       out.push(`${l.name}: subject ${why} — it exports with the masks from before`);
     } else if (info.status === 'none' || info.status === 'running' || info.status === 'error') {
       const pct = info.status === 'running' ? ` (${Math.round((info.job?.progress ?? 0) * 100)}% analysed)` : '';
@@ -157,7 +159,8 @@ export function ExportDialog({ project, media, subjects, time, onClose, onDone }
     abort.current = ctrl;
     setProgress({ phase: 'prepare', done: 0, total: frames });
     try {
-      const r = await exportProject(project, media, opts, setProgress, ctrl.signal, subjects);
+      // The masks as they are now: an analysis landing mid-export doesn't change the file partway through.
+      const r = await exportProject(project, media, opts, setProgress, ctrl.signal, subjects.snapshot());
       download(r.blob, r.name);
       onDone(`Exported ${r.name} (${mb(r.blob.size)}).`);
       onClose();
@@ -179,7 +182,7 @@ export function ExportDialog({ project, media, subjects, time, onClose, onDone }
         width: Math.round(w * Math.min(1, 640 / w)),
         height: Math.round(h * Math.min(1, 640 / w)),
       };
-      const r = await exportProject(project, media, small, () => {}, new AbortController().signal, subjects);
+      const r = await exportProject(project, media, small, () => {}, new AbortController().signal, subjects.snapshot());
       setPreview((old) => {
         if (old) URL.revokeObjectURL(old);
         return URL.createObjectURL(r.blob);

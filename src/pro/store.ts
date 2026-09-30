@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useReducer } from 'react';
-import { type EffectInstance, type Layer, type Project } from './model';
+import { looksKeyFor, type EffectInstance, type Layer, type Project } from './model';
 
 /**
  * Studio state: the project plus undo/redo history. Every edit is a pure
@@ -139,9 +139,19 @@ export function effectsOf(p: Project, owner: string | null): EffectInstance[] {
 
 export function setEffects(owner: string | null, fn: (fx: EffectInstance[]) => EffectInstance[]) {
   return (p: Project): Project =>
-    owner === null
-      ? { ...p, effects: fn(p.effects) }
-      : updateLayer(owner, (l) => ({ ...l, effects: fn(l.effects) }))(p);
+    owner === null ? { ...p, effects: fn(p.effects) } : updateLayer(owner, (l) => withLooks(l, fn(l.effects)))(p);
+}
+
+/**
+ * A layer with other looks. A subject key that drops the looks' own
+ * background follows them (dark paper to light and back) while it suits the
+ * looks it was set for; one set against them stays as it is.
+ */
+function withLooks(l: Layer, effects: EffectInstance[]): Layer {
+  const s = l.subject;
+  if (!s || s.looksKey === 'off' || s.looksKey !== looksKeyFor(l.effects)) return { ...l, effects };
+  const looksKey = looksKeyFor(effects);
+  return { ...l, effects, subject: looksKey === s.looksKey ? s : { ...s, looksKey } };
 }
 
 export function updateEffect(owner: string | null, uid: string, patch: Partial<EffectInstance>) {

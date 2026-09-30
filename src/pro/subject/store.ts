@@ -6,12 +6,15 @@ import { deleteMasks, loadMasks, onMasksPruned, saveMasks } from '../storage';
 import { analyzeSubject } from './analyze';
 import { LiveSubject } from './live';
 import {
+  analysisRange,
+  covers,
   finalizeFrame,
   finishKey,
   maskIndex,
   parseSequence,
   readRecord,
   sequenceFit,
+  staleReason,
   toRecord,
   wantedMeta,
   type MaskSequence,
@@ -45,6 +48,8 @@ interface Job {
   job: SubjectJob;
   /** analysisKey() of the layer as it was analysed. */
   key: string;
+  /** Media seconds it analyses (null when the media's length isn't known: it fails). */
+  range: { from: number; to: number } | null;
 }
 
 /** How an analysis ended. */
@@ -151,9 +156,10 @@ export class SubjectStore implements MaskSource {
     this.resave(layer.id);
     const held = this.held.get(layer.id);
     const duration = this.durationOf(layer);
+    const want = duration !== null ? wantedMeta(layer, duration, this.canvasDuration) : null;
     let out = none;
-    if (held && duration !== null) {
-      const fit = sequenceFit(held.seq.meta, wantedMeta(layer, duration, this.canvasDuration));
+    if (held && want) {
+      const fit = sequenceFit(held.seq.meta, want);
       if (fit !== 'other-media') {
         const { seq } = held;
         out = {
@@ -163,11 +169,15 @@ export class SubjectStore implements MaskSource {
           to: seq.meta.to,
           backend: seq.backend,
           ms: seq.ms,
+          ...(fit === 'stale' && { reason: staleReason(seq.meta, want) }),
         };
       }
     }
     const job = this.jobs.get(layer.id);
-    if (job) return { ...out, status: 'running', job: job.job };
+    if (job) {
+      const short = !!job.range && !!want && !covers(job.range, want);
+      return { ...out, status: 'running', job: job.job, reason: short ? 'range' : undefined };
+    }
     // A failure stands until the settings it was about change (another method, the object tracked…).
     const error = this.errors.get(layer.id);
     return error && error.key === this.analysisKey(layer) ? { ...out, status: 'error', error: error.message } : out;
@@ -181,6 +191,7 @@ export class SubjectStore implements MaskSource {
       ctrl: new AbortController(),
       job: { phase: 'analyse', progress: 0 },
       key: this.analysisKey(layer),
+      range: null,
     };
     this.jobs.set(layer.id, entry);
     this.errors.delete(layer.id);
@@ -197,6 +208,8 @@ export class SubjectStore implements MaskSource {
         if (held && d !== null && sequenceFit(held.seq.meta, wantedMeta(layer, d, this.canvasDuration)) === 'current')
           return 'done';
       }
+      const duration = this.durationOf(layer);
+      entry.range = duration !== null ? analysisRange(layer, duration, this.canvasDuration) : null;
       const seq = await analyzeSubject(
         layer,
         this.canvasDuration,
@@ -350,13 +363,28 @@ export class SubjectStore implements MaskSource {
   // ─── Masks for the renderer ────────────────────────────────────────────────
 
   maskAt(layer: Layer, _project: Project, t: number): LayerMask | null {
-    const held = this.held.get(layer.id);
+    return this.maskIn(this.held, layer, t);
+  }
+
+  /**
+   * The masks as they are now, for an export: an analysis that lands while
+   * it renders doesn't switch the file to new masks partway through (the
+   * webcam stays live).
+   */
+  snapshot(): MaskSource {
+    const held = new Map(this.held);
+    return { version: this.maskVer, maskAt: (l, _p, t) => this.maskIn(held, l, t) };
+  }
+
+  /** The layer's mask at t, from these held masks (the store's own, or a snapshot's). */
+  private maskIn(from: Map<string, Held>, layer: Layer, t: number): LayerMask | null {
+    const held = from.get(layer.id);
     this.resave(layer.id);
     const s = layer.subject;
     if (!s?.on || !SEPARABLE_KINDS.includes(layer.kind)) return null;
     if (layer.kind === 'webcam') return this.liveMask(layer, s);
     if (!held) {
-      this.lazyLoad(layer);
+      if (from === this.held) this.lazyLoad(layer);
       return null;
     }
     if (held.seq.meta.media !== this.mediaKey(layer) || held.seq.meta.kind !== layer.kind) return null;
@@ -407,9 +435,14 @@ export class SubjectStore implements MaskSource {
     const m = this.media.get(layer.mediaId);
     if (!m || !(m.el instanceof HTMLVideoElement)) return null;
     let live = this.live.get(layer.id);
-    if (live && live.mediaId !== m.id) {
+    /** The same webcam's separation by another method, whose last mask shows until the new one's first. */
+    let before: LiveSubject | null = null;
+    // Another webcam, or another method: start afresh (a request of the old method may still be waiting on a
+    // model download, which the new one mustn't wait behind).
+    if (live && (live.mediaId !== m.id || live.sub.method !== s.method)) {
       live.sub.stop();
       this.live.delete(layer.id);
+      if (live.mediaId === m.id) before = live.sub;
       live = undefined;
     }
     if (!live) {
@@ -424,13 +457,14 @@ export class SubjectStore implements MaskSource {
           this.emit();
         }
       });
+      sub.latest = before?.latest ?? null;
+      sub.previous = before?.previous ?? null;
       live = { id: ++this.ids, sub, mediaId: m.id, wanted: 0 };
       this.live.set(layer.id, live);
       sub.start();
       this.watchLive();
     }
     live.wanted = performance.now();
-    live.sub.method = s.method;
     const raw = live.sub.latest;
     if (!raw) return null;
     const picture: [number, number] = [m.width, m.height];

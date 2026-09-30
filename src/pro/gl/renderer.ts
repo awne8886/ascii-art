@@ -946,6 +946,8 @@ export class ProRenderer {
       this.canvasMask = null;
     }
     let mask: Target | null = null;
+    /** A separated layer is drawn whose masks aren't there yet (being analysed, or loading). */
+    let pending = false;
     for (const layer of project.layers) {
       const frame = frames.get(layer.id);
       if (!frame) continue;
@@ -964,6 +966,7 @@ export class ProRenderer {
       if (!set && (owner.subj[0] || owner.prepOut || owner.matteOut)) this.dropSubject(owner);
       const lm = set ? (input.maskOf?.(layer) ?? null) : null;
       const subj = lm ? this.subjectFor(owner, lm) : null;
+      if (set && !subj) pending = true;
       const fxCtx = {
         time: input.time,
         duration: canvas.duration,
@@ -1007,6 +1010,14 @@ export class ProRenderer {
         }
         this.canvasMaskPass(mask, tex, inv, opacity, subj, counts, layer.blend !== 0);
       }
+    }
+    // No separated layer shows a subject this frame (before or after its clip, hidden, faded out): there are
+    // no subjects, so looks on the subject show nowhere and looks on the background everywhere. Only with
+    // nothing separated at all, or masks still on their way, do they fall back to the whole canvas, as a
+    // layer's own looks do.
+    if (wantMask && !mask && !pending && project.layers.some((l) => l.subject?.on)) {
+      mask = this.canvasMask = this.maskTarget(this.canvasMask, W, H);
+      this.clearTarget(mask);
     }
 
     // The whole canvas: looks, finish, grade & paper.
