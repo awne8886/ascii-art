@@ -1,6 +1,7 @@
 # ascii art
 
-Turn any photo into **animated colour ASCII art** in your browser. Upload (or drop, or paste) a picture, and it's redrawn
+Turn any photo into **animated colour ASCII art** in your browser — or switch to the **PRO studio** for videos, 59
+looks, layers, motion and a timeline, with MP4 export. Upload (or drop, or paste) a picture, and it's redrawn
 as glyphs that ripple like fabric under sweeping bands of light, with bloom, adjustable detail, and AI subject /
 background separation. Nothing is uploaded anywhere: your photo never leaves your device.
 
@@ -32,6 +33,46 @@ light bands and sparse flicker. It's generalised from one hand-drawn pizza to an
   - **Export**: PNG (2× or 4×), a 6-second video (WebM, or MP4 where that's what the browser records), or the grid as
     plain text.
 - Settings persist between visits. With `prefers-reduced-motion`, the animation starts paused (one switch turns it on).
+
+## PRO studio
+
+The sidebar's **PRO** card (or `#/pro`) switches the site to its other side: a full image **and video** effects studio in
+the same black / cream / cheese colours, laid out like [Ladybug](https://app.theladybug.app/). The photo open in the
+classic view comes along as the first layer. **Classic** in the rail (or the logo) goes back.
+
+- **Video in, video out.** Drop or pick videos (or pictures, or use the webcam). Every frame goes through the looks,
+  live in the preview, and again frame by frame on export.
+- **59 looks** in ten families, with search, live thumbnails, presets and _Surprise me_: Light & glass (Thermal), Type
+  & code (ASCII, Dither Text, Matrix Rain, Number Field, Word Mosaic…), Halftone & dither (Halftone, Dithering, Riso,
+  Pixel Poster, Retro Matrix…), Textile & craft (Crosshatch, Knitted Embroidery, Kilim Carpet…), Pixel & 3D (Toy
+  Bricks, Voronoi, Quadtree Zoom…), Edges & outlines (Contour Map, Edge Detection…), Analog & glitch (CRT, VHS, Pixel
+  Sort, Glitch…), Analog (Film Prism, Wave Lines), Experimental (Holo, Stardust, Ember Veil…) and Tracking & interface
+  (Brand Generator). The classic site's rippling colour ASCII is the _ASCII_ look.
+- **Stacks of looks** per layer and for the whole canvas, each with blend mode, strength and where it appears (brights,
+  darks, centre, edges). Any number setting can **loop** between two values (◇) or **follow the sound** (♪) of the
+  video layers. Save stacks to _Saved looks_ and reuse them.
+- **Layers**: pictures, videos, webcam, type, shapes (circle, square, sphere, star, blob…) and the animated sample clip,
+  with placement handles, fit, opacity, blend modes, 3D tilt, and **motion** presets (drift, orbit, spin, bounce,
+  zoom, shake, swing…) that always loop seamlessly.
+- **Object tracking** (the dock's _Track_ tab): draw a box around something in a video or the sample clip and it is
+  followed through the whole clip (a template tracker with normalized cross-correlation, run frame by frame in the
+  browser, forwards and backwards from where you drew it). Other layers can **follow** it (optionally growing and
+  shrinking with it), _Label that follows_ adds a tag that rides along, and any look can appear only on the **tracked
+  object**.
+- **Finish**: bloom, streaks and trails per layer or for the canvas; paper grain and a colour grade for the canvas.
+- **Canvas & timeline**: aspect presets or any size, length, frame rate, loop, background (see-through, light, dark,
+  colour), a transport bar and an expandable timeline where clips can be moved and trimmed.
+- **Export**: MP4 or WebM (with the video layers' sound mixed in), a PNG of the current frame, or a PNG sequence as a
+  ZIP; 720 px up to 4K, any length and frame rate, optional motion blur. Rendering is frame-accurate: videos are
+  decoded frame by frame with WebCodecs ([Mediabunny](https://mediabunny.dev/)), so a slow machine just takes longer.
+  Browsers without WebCodecs fall back to a real-time recording.
+- Undo / redo, keyboard shortcuts (press **?**), templates, and autosave (the project in `localStorage`, its files in
+  IndexedDB). Nothing leaves your device.
+
+Under the hood (`src/pro/`): each look is one fragment shader (`effects/`) run by a WebGL2 compositor
+(`gl/renderer.ts`) that renders each layer's looks at the size it covers on screen, places it with a projective
+transform, then applies the canvas's looks and finish. The same renderer draws the preview and, off screen, the export
+(`export/exporter.ts`).
 
 ## How it works
 
@@ -88,6 +129,9 @@ npm run check      # lint, format check, typecheck, unit tests
 npm run build      # static site in dist/
 ```
 
+In development, `#/pro-sheet` renders every look (`?presets=1` for every preset, `?only=a,b` for some) on the sample
+picture and lists any shader that fails to compile.
+
 ## Deploying
 
 It's a static site. `.github/workflows/pages.yml` checks every push and pull request and publishes `main` to
@@ -96,4 +140,4 @@ host works too: `npm run build` and upload `dist/` (set `BASE_PATH` if it's serv
 
 ## Licence
 
-MIT. The segmentation models keep their own licences (Apache-2.0 and MIT, above).
+MIT. The segmentation models keep their own licences (Apache-2.0 and MIT, above); Mediabunny is MPL-2.0.

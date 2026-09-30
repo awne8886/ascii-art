@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { type AsciiEngine, type EngineStats, type FinalMask } from './ascii/engine';
 import { Sidebar, type SegmentStatus } from './components/Sidebar';
 import { Stage } from './components/Stage';
+import { Curtain } from './Curtain';
+import { handOff } from './handoff';
 import { alphaMask, fromSource, loadImageFile, type SourceImage } from './image';
 import { pizzaSample } from './sample';
 import { segment, type SegmentProgress } from './segment/client';
@@ -66,6 +68,15 @@ export function App() {
   const [dragging, setDragging] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [exportBusy, setExportBusy] = useState<string | null>(null);
+  const [leaving, setLeaving] = useState(false);
+  // Coming back from PRO: let the ASCII sheet dissolve off the page.
+  const [arriving, setArriving] = useState(() => {
+    try {
+      return sessionStorage.getItem('ascii-art:from-pro') === '1';
+    } catch {
+      return false;
+    }
+  });
   const engineRef = useRef<AsciiEngine | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const wantedKey = useRef('');
@@ -84,6 +95,19 @@ export function App() {
   }, [toast]);
 
   const loadSample = useCallback(() => setImage(sampleImage()), []);
+
+  const goPro = useCallback(() => {
+    if (image) handOff(image.canvas, image.name);
+    setLeaving(true);
+  }, [image]);
+
+  useEffect(() => {
+    try {
+      if (arriving) sessionStorage.removeItem('ascii-art:from-pro');
+    } catch {
+      // Fine.
+    }
+  }, [arriving]);
 
   const openFile = useCallback(async (file: File | Blob, name = (file as File).name || 'pasted-image') => {
     if (file.type && !file.type.startsWith('image/')) {
@@ -283,6 +307,12 @@ export function App() {
           <span>controls</span>
         </button>
       )}
+      {!open && (
+        <button type="button" className="panel-toggle panel-toggle--pro" onClick={goPro} title="Open the PRO studio">
+          <span className="pro-pill">pro</span>
+          <span>studio</span>
+        </button>
+      )}
 
       <Sidebar
         open={open}
@@ -301,6 +331,7 @@ export function App() {
         onExportPng={(k) => void exportPng(k)}
         onExportVideo={() => void exportVideo()}
         onCopyText={() => void copyText()}
+        onPro={goPro}
       />
 
       <input
@@ -325,6 +356,8 @@ export function App() {
           {toast}
         </div>
       )}
+      {leaving && <Curtain mode="cover" onDone={() => (location.hash = '#/pro')} />}
+      {arriving && <Curtain mode="reveal" onDone={() => setArriving(false)} />}
     </div>
   );
 }

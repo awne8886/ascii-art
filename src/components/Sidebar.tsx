@@ -27,6 +27,8 @@ interface Props {
   onExportPng: (scale: number) => void;
   onExportVideo: () => void;
   onCopyText: () => void;
+  /** Switch to the PRO studio. */
+  onPro: () => void;
 }
 
 const HAS_WEBGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
@@ -51,6 +53,19 @@ export function Sidebar(p: Props) {
       </div>
 
       <div className="sidebar__scroll">
+        <button type="button" className="pro-card" onClick={p.onPro}>
+          <span className="pro-card__top">
+            <span className="pro-card__badge">pro</span>
+            <span className="pro-card__title">Open the studio</span>
+            <span className="pro-card__arrow" aria-hidden="true">
+              →
+            </span>
+          </span>
+          <span className="pro-card__text">
+            Videos, 59 looks, layers, motion and a timeline. Every frame goes through the effect; export MP4.
+          </span>
+        </button>
+
         <Section id="image" title="Image">
           <button type="button" className="btn btn--primary btn--block" onClick={p.onPick}>
             Upload image
