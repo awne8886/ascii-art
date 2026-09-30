@@ -123,6 +123,9 @@ export function ProApp() {
     const t = setTimeout(() => {
       for (const l of project.layers) {
         const info = subjects.info(l);
+        // Masks that cover what shows end the hold: a later edit reaching as far again (after another analysis
+        // for less, say with another rate) analyses again.
+        if (info.status === 'ready') autoRange.current.delete(l.id);
         if (!analysesItself(l) || info.reason !== 'range') continue;
         if (info.status !== 'stale' && info.status !== 'running') continue;
         const d = layerMediaDuration(l, media);

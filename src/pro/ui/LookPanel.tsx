@@ -498,7 +498,7 @@ function Editor({
 
       <Group
         // Subject or background picked (up in "Appears in" too) with nothing separated: open, to say what it needs.
-        key={fx.appears >= 6 && !separated ? 'mask-needs-subject' : 'mask'}
+        reveal={fx.appears >= 6 && !separated}
         title="Mask"
         icon="mask"
         defaultOpen={fx.appears !== 0}
