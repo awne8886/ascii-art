@@ -30,9 +30,13 @@ interface ModelFile {
 /** A model file on its way, and the requests waiting on it. */
 interface Download {
   file: Promise<ModelFile>;
-  /** Ids of the requests waiting on it; the last one to give up (cancelled) stops the download. */
+  /** Ids of the requests waiting on it; once the last one gives up (cancelled), the download stops soon after. */
   waiting: Set<number>;
   ctrl: AbortController;
+  /** The stop pending while nothing waits (a request that joins in time keeps the download going). */
+  idle?: ReturnType<typeof setTimeout>;
+  /** How far it's got (total 0 until it starts), for requests that join it on the way. */
+  at: { loaded: number; total: number };
 }
 
 /** Model files downloading (or downloaded, until their session starts or nothing waits on them), per model. */
@@ -129,6 +133,7 @@ function download(model: ModelId, id: number): Download {
   if (had) return had;
   const ctrl = new AbortController();
   const waiting = new Set<number>();
+  const at = { loaded: 0, total: 0 };
   const file = (async () => {
     const spec = MODELS[model];
     const support = spec.webgpu ? await webGpu() : 'none';
@@ -138,12 +143,13 @@ function download(model: ModelId, id: number): Download {
       throw new Error(`${spec.label} needs WebGPU, which this browser or its graphics card doesn’t offer.`);
     }
     const bytes = await fetchModel(modelUrl(spec, variant.file), variant.mb, ctrl.signal, (loaded, total) => {
+      Object.assign(at, { loaded, total });
       const [to = id] = waiting;
       post({ type: 'progress', id: to, phase: 'download', loaded, total });
     });
     return { bytes, gpu: variant !== spec.wasm };
   })();
-  const dl: Download = { file, waiting, ctrl };
+  const dl: Download = { file, waiting, ctrl, at };
   files.set(model, dl);
   file.catch(() => release(model, dl));
   return dl;
@@ -274,8 +280,15 @@ const waitingIds = new Set<number>();
 const cancelled = new Set<number>();
 
 /**
- * Requests given up on: they won't run, and a download only they waited on stops (the next request for
- * that model starts afresh, from the cache if it got that far).
+ * How long a download nothing waits on any more keeps going: an analysis started again straight away (other
+ * settings, undo) asks for the same model, and joins it instead of starting the download over.
+ */
+const IDLE_DOWNLOAD_MS = 5000;
+
+/**
+ * Requests given up on: they won't run, and a download only they waited on stops, unless a request for that
+ * model joins it within IDLE_DOWNLOAD_MS (after that, the next one starts afresh, from the cache if it got
+ * that far).
  */
 function cancel(ids: number[]): void {
   for (const id of ids) {
@@ -283,8 +296,12 @@ function cancel(ids: number[]): void {
     cancelled.add(id);
     for (const [model, dl] of files) {
       if (!dl.waiting.delete(id) || dl.waiting.size) continue;
-      release(model, dl);
-      dl.ctrl.abort();
+      clearTimeout(dl.idle);
+      dl.idle = setTimeout(() => {
+        if (dl.waiting.size) return;
+        release(model, dl);
+        dl.ctrl.abort();
+      }, IDLE_DOWNLOAD_MS);
     }
   }
 }
@@ -308,7 +325,10 @@ self.onmessage = (e: MessageEvent<SegmentMessage>) => {
   const model = req.method;
   const dl = sessions.has(model) ? null : download(model, req.id);
   dl?.waiting.add(req.id);
+  if (dl) clearTimeout(dl.idle);
   waitingIds.add(req.id);
+  // Joining a download on its way: hear where it's at.
+  if (dl && dl.at.loaded < dl.at.total) post({ type: 'progress', id: req.id, phase: 'download', ...dl.at });
   const enqueue = () => {
     queue = queue
       .then(() => {

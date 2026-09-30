@@ -99,6 +99,11 @@ function subjectWarnings(
   return out;
 }
 
+/** The warnings, not counting an analysis getting on (its percentage). */
+function gist(warnings: string[]): string {
+  return warnings.map((w) => w.replace(/ \(\d+% analysed\)/, '')).join('\n');
+}
+
 export function ExportDialog({ project, media, subjects, time, onClose, onDone }: Props) {
   const c = project.canvas;
   const hasSound = project.layers.some((l) => l.kind === 'video' && !l.muted);
@@ -149,7 +154,7 @@ export function ExportDialog({ project, media, subjects, time, onClose, onDone }
   const warnings = warningsNow();
   // While it renders, what held when Export was pressed (an analysis landing meanwhile isn't in the file).
   const shown = progress && pressed ? pressed : warnings;
-  const changed = !!progress && !!pressed && pressed.join('\n') !== warnings.join('\n');
+  const changed = !!progress && !!pressed && gist(pressed) !== gist(warnings);
 
   useEffect(() => () => abort.current?.abort(), []);
   useEffect(() => {
@@ -170,7 +175,7 @@ export function ExportDialog({ project, media, subjects, time, onClose, onDone }
       // The masks as they are now: an analysis landing mid-export doesn't change the file partway through.
       const r = await exportProject(project, media, opts, setProgress, ctrl.signal, subjects.snapshot());
       download(r.blob, r.name);
-      const later = warningsNow().join('\n') !== warnings.join('\n');
+      const later = gist(warningsNow()) !== gist(warnings);
       onDone(
         `Exported ${r.name} (${mb(r.blob.size)}).${later ? ' The subject analysis changed while it rendered: export again to include it.' : ''}`,
       );

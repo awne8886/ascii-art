@@ -62,8 +62,8 @@ classic view comes along as the first layer. **Classic** in the rail (or the log
 - **Subject & background** (the dock's _Subject_ tab): the subject of a video, the sample clip, a picture or the
   webcam is separated from its background, with the classic site's models (_AI · fast_, _AI · best_ on WebGPU, or
   _Classic_ with no download). Then pick a composition: the looks **on the subject** over the untouched video, just
-  the **characters over the subject** (the looks' own background, dark or light, dropped, so the video shows between
-  the glyphs), the **subject only** (its background see-through, so the layers below show), the looks on the
+  the **characters over the subject** (the looks' own background, dark, light or coloured, dropped, so the video shows
+  between the glyphs), the **subject only** (its background see-through, so the layers below show), the looks on the
   background, or the background only; or set what shows, where the looks go, how they blend and whether their dark or
   light background drops away, yourself. Edges have a threshold, softness, grow / shrink and a steadier mode, and the
   background can be dimmed, blurred or desaturated before the looks. Videos are analysed ahead of time (5 to 30 masks
