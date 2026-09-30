@@ -145,6 +145,23 @@ button {
   color: var(--cheese);
 }
 
+.panel-toggle--pro {
+  right: 138px;
+}
+
+.pro-pill,
+.pro-card__badge {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--cheese);
+  color: #000;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
 /* ── Sidebar ────────────────────────────────────────────────────────────── */
 
 .sidebar {
@@ -218,6 +235,78 @@ button {
 .icon-btn:hover {
   color: var(--text);
   border-color: var(--border);
+}
+
+/* The way to the PRO studio */
+
+.pro-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: calc(100% - 28px);
+  margin: 14px 14px 6px;
+  padding: 13px 14px;
+  border: 1px solid rgba(255, 197, 61, 0.45);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(255, 197, 61, 0.14) 1px, transparent 1.4px) 0 0 / 6px 6px,
+    linear-gradient(135deg, rgba(255, 197, 61, 0.14), rgba(255, 90, 60, 0.08));
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    transform 0.15s;
+}
+
+.pro-card:hover {
+  border-color: var(--cheese);
+  transform: translateY(-1px);
+}
+
+.pro-card__top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pro-card__title {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--cheese-hi);
+}
+
+.pro-card__arrow {
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--cheese);
+  transition: transform 0.15s;
+}
+
+.pro-card:hover .pro-card__arrow {
+  transform: translateX(3px);
+}
+
+.pro-card__text {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.curtain {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+}
+
+.curtain--cover {
+  pointer-events: all;
 }
 
 /* Sections */
