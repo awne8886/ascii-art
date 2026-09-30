@@ -114,6 +114,8 @@ export function ExportDialog({ project, media, subjects, time, onClose, onDone }
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  /** The subject warnings when Export was pressed: the file keeps the masks it had then. */
+  const [pressed, setPressed] = useState<string[] | null>(null);
   const abort = useRef<AbortController | null>(null);
 
   const video = format === 'mp4' || format === 'webm';
@@ -136,13 +138,18 @@ export function ExportDialog({ project, media, subjects, time, onClose, onDone }
   );
 
   useSubjectsVersion(subjects);
-  const warnings = subjectWarnings(
-    project,
-    subjects,
-    media,
-    (l) => (format === 'png' ? layerActive(l, time) : l.visible && l.start < duration && l.start + l.length > 0),
-    format === 'png' ? 0 : duration,
-  );
+  const warningsNow = () =>
+    subjectWarnings(
+      project,
+      subjects,
+      media,
+      (l) => (format === 'png' ? layerActive(l, time) : l.visible && l.start < duration && l.start + l.length > 0),
+      format === 'png' ? 0 : duration,
+    );
+  const warnings = warningsNow();
+  // While it renders, what held when Export was pressed (an analysis landing meanwhile isn't in the file).
+  const shown = progress && pressed ? pressed : warnings;
+  const changed = !!progress && !!pressed && pressed.join('\n') !== warnings.join('\n');
 
   useEffect(() => () => abort.current?.abort(), []);
   useEffect(() => {
@@ -158,17 +165,22 @@ export function ExportDialog({ project, media, subjects, time, onClose, onDone }
     const ctrl = new AbortController();
     abort.current = ctrl;
     setProgress({ phase: 'prepare', done: 0, total: frames });
+    setPressed(warnings);
     try {
       // The masks as they are now: an analysis landing mid-export doesn't change the file partway through.
       const r = await exportProject(project, media, opts, setProgress, ctrl.signal, subjects.snapshot());
       download(r.blob, r.name);
-      onDone(`Exported ${r.name} (${mb(r.blob.size)}).`);
+      const later = warningsNow().join('\n') !== warnings.join('\n');
+      onDone(
+        `Exported ${r.name} (${mb(r.blob.size)}).${later ? ' The subject analysis changed while it rendered: export again to include it.' : ''}`,
+      );
       onClose();
     } catch (e) {
       if ((e as Error).name === 'AbortError') setError('Export cancelled.');
       else setError(e instanceof Error ? e.message : String(e));
     } finally {
       setProgress(null);
+      setPressed(null);
       abort.current = null;
     }
   };
@@ -370,11 +382,17 @@ export function ExportDialog({ project, media, subjects, time, onClose, onDone }
             {error}
           </p>
         )}
-        {warnings.length > 0 && (
+        {(shown.length > 0 || changed) && (
           <ul className="export__warn">
-            {warnings.map((w) => (
+            {shown.map((w) => (
               <li key={w}>{w}</li>
             ))}
+            {changed && (
+              <li>
+                Subject analysis changed during the export — this file keeps what it had when you pressed Export; export
+                again to include it.
+              </li>
+            )}
           </ul>
         )}
 

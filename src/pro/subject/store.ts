@@ -75,6 +75,8 @@ export class SubjectStore implements MaskSource {
   private jobs = new Map<string, Job>();
   /** The last analysis failure per layer, and which analysis settings it was for. */
   private errors = new Map<string, { message: string; key: string }>();
+  /** Layers whose analysis was stopped (Stop), and what they wanted then (wantKey): not restarted for that. */
+  private stopped = new Map<string, string>();
   private live = new Map<string, Live>();
   private liveTimer: ReturnType<typeof setInterval> | null = null;
   /** Finalized frames by MaskFrame.version, least recently used first. */
@@ -144,12 +146,23 @@ export class SubjectStore implements MaskSource {
     if (!SEPARABLE_KINDS.includes(layer.kind)) return none;
     if (layer.kind === 'webcam') {
       const l = this.live.get(layer.id)?.sub;
+      // Only this method's own masks count (another's last one shows until its first), and its model's download.
+      const own = !!l?.seq;
+      const job = !own && l?.job ? l.job : null;
       return {
         ...none,
         status: l?.error ? 'error' : 'live',
-        frames: l?.latest ? 1 : 0,
-        backend: l?.backend || undefined,
+        frames: own ? 1 : 0,
+        backend: own ? l?.backend || undefined : undefined,
         error: l?.error ?? undefined,
+        ...(job && {
+          job: {
+            phase: job.phase === 'download' ? 'download' : 'init',
+            progress: 0,
+            loaded: job.loaded,
+            total: job.total,
+          },
+        }),
       };
     }
     if (layer.subject?.on) this.lazyLoad(layer);
@@ -195,6 +208,8 @@ export class SubjectStore implements MaskSource {
     };
     this.jobs.set(layer.id, entry);
     this.errors.delete(layer.id);
+    // Any analysis that starts ends a Stop's hold.
+    this.stopped.delete(layer.id);
     this.emit();
     const current = () => this.jobs.get(layer.id) === entry && gen === this.gen;
     try {
@@ -242,6 +257,20 @@ export class SubjectStore implements MaskSource {
     job.ctrl.abort();
     this.jobs.delete(layerId);
     this.emit();
+  }
+
+  /**
+   * The user's Stop: cancel, and hold (stoppedHere) while the layer wants
+   * what it wanted then, so nothing restarts the analysis by itself for that.
+   */
+  stop(layer: Layer): void {
+    this.stopped.set(layer.id, this.wantKey(layer));
+    this.cancel(layer.id);
+  }
+
+  /** Whether the analysis was stopped (Stop) for what the layer wants now. */
+  stoppedHere(layer: Layer): boolean {
+    return this.stopped.get(layer.id) === this.wantKey(layer);
   }
 
   /**
@@ -300,6 +329,7 @@ export class SubjectStore implements MaskSource {
     this.liveTimer = null;
     this.held.clear();
     this.errors.clear();
+    this.stopped.clear();
     this.finished.clear();
     this.last.clear();
     this.saved.clear();
@@ -448,6 +478,8 @@ export class SubjectStore implements MaskSource {
     if (!live) {
       let said = '';
       const sub = new LiveSubject(layer.id, m.el, s.method, (what) => {
+        // The model downloading or starting: the panel says so (until the first mask).
+        if (what === 'progress') return this.emitSoon();
         // A new mask changes what maskAt returns (the Viewport polls the version); the first mask,
         // a new backend or an error changes what the panel says, so tell subscribers then.
         if (what === 'mask') this.maskVer++;
@@ -463,6 +495,8 @@ export class SubjectStore implements MaskSource {
       this.live.set(layer.id, live);
       sub.start();
       this.watchLive();
+      // The panel says what this one is doing (deferred: this runs while drawing).
+      this.emitSoon();
     }
     live.wanted = performance.now();
     const raw = live.sub.latest;
@@ -498,9 +532,16 @@ export class SubjectStore implements MaskSource {
   // ─── Helpers ───────────────────────────────────────────────────────────────
 
   /** The settings an analysis of the layer depends on (not the range: trimming doesn't undo a failure). */
-  private analysisKey(layer: Layer): string {
+  analysisKey(layer: Layer): string {
     const m = wantedMeta(layer, this.durationOf(layer) ?? 0);
     return `${m.media}|${m.kind}|${m.method}|${m.area}|${m.rate}|${m.track}`;
+  }
+
+  /** Those settings and the media seconds that show (analysisRange): everything the layer's masks must fit. */
+  private wantKey(layer: Layer): string {
+    const d = this.durationOf(layer);
+    const r = d === null ? null : analysisRange(layer, d, this.canvasDuration);
+    return `${this.analysisKey(layer)}|${r ? `${r.from}|${r.to}` : '?'}`;
   }
 
   /** What a sequence's meta.media must be for the layer's current media. */

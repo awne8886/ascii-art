@@ -1,4 +1,4 @@
-import { isSuperseded, segment } from '../../segment/client';
+import { isSuperseded, segment, type SegmentProgress } from '../../segment/client';
 import { type SegmentMethod } from '../../settings';
 import { maskBytes, maskDims, type RawMask } from './masks';
 
@@ -24,6 +24,8 @@ export class LiveSubject {
   seq = 0;
   error: string | null = null;
   backend = '';
+  /** Its model downloading or starting, until the first mask. */
+  job: SegmentProgress | null = null;
 
   private run = 0;
   private asked = 0;
@@ -34,8 +36,8 @@ export class LiveSubject {
     private readonly el: HTMLVideoElement,
     /** Another method takes another LiveSubject (the store starts one). */
     readonly method: SegmentMethod,
-    /** Called with every new mask, and when an error appears or clears. */
-    private readonly onChange: (what: 'mask' | 'error') => void,
+    /** Called with every new mask, when an error appears or clears, and as its model downloads or starts. */
+    private readonly onChange: (what: 'mask' | 'error' | 'progress') => void,
   ) {}
 
   get running(): boolean {
@@ -78,9 +80,15 @@ export class LiveSubject {
       try {
         const lane = `live:${this.layerId}`;
         const input = { rgba: image.data, width: image.width, height: image.height };
+        const onProgress = (p: SegmentProgress) => {
+          if (!alive() || (p.phase !== 'download' && p.phase !== 'init')) return;
+          this.job = p;
+          this.onChange('progress');
+        };
         // Keys unique to this run: a stopped one's request still in flight is never shared.
-        const r = await segment(`${lane}:${run}:${++this.asked}`, input, this.method, undefined, lane);
+        const r = await segment(`${lane}:${run}:${++this.asked}`, input, this.method, onProgress, lane);
         if (!alive()) return;
+        this.job = null;
         this.previous = this.latest;
         this.latest = {
           width: image.width,
@@ -98,6 +106,7 @@ export class LiveSubject {
       } catch (e) {
         if (!alive()) return;
         if (isSuperseded(e)) continue;
+        this.job = null;
         this.error = e instanceof Error ? e.message : String(e);
         this.onChange('error');
         await wait(RETRY_MS);

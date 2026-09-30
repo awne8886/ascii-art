@@ -1,4 +1,5 @@
 import { segment, type SegmentProgress, type SegmentResult } from '../../segment/client';
+import { type SegmentMethod } from '../../settings';
 import { openFrames, type DecodedFrame } from '../decode';
 import { type MediaStore } from '../media';
 import { defaultSubject, trackAt, type Layer } from '../model';
@@ -44,8 +45,11 @@ function message(e: unknown): string {
 }
 
 /** A model failure, as a sentence, with the way out ("Failed to fetch" has no full stop of its own). */
-function withHint(msg: string): string {
-  return `${msg}${/[.!?…]$/.test(msg) ? '' : '.'} Try “Classic”, which needs no download.`;
+function withHint(msg: string, method: SegmentMethod): string {
+  const end = /[.!?…]$/.test(msg) ? '' : '.';
+  return method === 'ai-hq'
+    ? `${msg}${end} Try “AI · fast” (any browser) or “Classic” (no download).`
+    : `${msg}${end} Try “Classic”, which needs no download.`;
 }
 
 /**
@@ -152,8 +156,8 @@ export async function analyzeSubject(
       if (!f) continue;
       const { image, rect, dims } = prepare(f, times[idx]!);
       const rgba = { rgba: image.data, width: image.width, height: image.height };
-      // Lane null: every frame's request runs, none is dropped for a newer one.
-      const p = segment(`${job}:${idx}`, rgba, s.method, onSegment, null).then(
+      // Lane null: every frame's request runs, none is dropped for a newer one (until the job is stopped).
+      const p = segment(`${job}:${idx}`, rgba, s.method, onSegment, null, signal).then(
         (r) => {
           frames[idx] = toMask(r, rect, dims);
           backend = r.backend;
@@ -161,7 +165,8 @@ export async function analyzeSubject(
           if (!signal.aborted) onProgress(analysing());
         },
         (e: unknown) => {
-          failure ??= new Error(s.method === 'classic' ? message(e) : withHint(message(e)));
+          if (signal.aborted) return;
+          failure ??= new Error(s.method === 'classic' ? message(e) : withHint(message(e), s.method));
         },
       );
       inflight.push(p);

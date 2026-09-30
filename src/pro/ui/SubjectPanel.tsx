@@ -1,11 +1,14 @@
-import { useCallback, useId, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { MODELS } from '../../segment/models';
 import { type SegmentMethod } from '../../settings';
 import { BLEND_MODES } from '../effects/prelude';
+import { effectById } from '../effects/registry';
 import { layerMediaDuration } from '../frames';
 import { type MediaStore } from '../media';
 import {
+  allows,
   defaultSubject,
+  lookPart,
   looksKeyFor,
   newEffect,
   SEPARABLE_KINDS,
@@ -27,6 +30,36 @@ const HAS_WEBGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
 const FAST_MB = MODELS['ai-fast'].wasm!.mb;
 /** fp16 where the GPU has it; bigger (fp32) where it doesn't. */
 const HQ_MB = `${MODELS['ai-hq'].webgpu!.mb}+`;
+
+let gpuProbe: Promise<boolean> | null = null;
+let gpuKnown: boolean | null = null;
+
+/**
+ * Whether WebGPU can run here: navigator.gpu alone isn't enough (a
+ * blocklisted or missing graphics card has no adapter). Asked once, and
+ * only while `ask` (AI · best is picked); until the answer, as navigator.gpu says.
+ */
+function useWebGpu(ask: boolean): boolean {
+  const [ok, setOk] = useState(gpuKnown ?? HAS_WEBGPU);
+  useEffect(() => {
+    if (!ask || !HAS_WEBGPU) return;
+    gpuProbe ??= (async () => {
+      try {
+        const gpu = (navigator as Navigator & { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
+        gpuKnown = !!(await gpu?.requestAdapter());
+      } catch {
+        gpuKnown = false;
+      }
+      return gpuKnown;
+    })();
+    let alive = true;
+    void gpuProbe.then((v) => alive && setOk(v));
+    return () => {
+      alive = false;
+    };
+  }, [ask]);
+  return ok;
+}
 
 // ─── Compositions ────────────────────────────────────────────────────────────
 
@@ -89,10 +122,11 @@ export function compositionSettings(c: Composition): CompositionSettings {
 
 /**
  * A preset's settings for a layer with these looks: a preset that drops
- * the looks' background drops the one they have (dark or light paper).
+ * the looks' background drops the one they have (dark or light paper), going
+ * by the looks that show in it.
  */
 export function compositionFor(c: Composition, effects: readonly EffectInstance[]): CompositionSettings {
-  return { ...compositionSettings(c), ...(c.looksKey !== 'off' && { looksKey: looksKeyFor(effects) }) };
+  return { ...compositionSettings(c), ...(c.looksKey !== 'off' && { looksKey: looksKeyFor(effects, c) }) };
 }
 
 /**
@@ -111,28 +145,29 @@ export function compositionOf(s: CompositionSettings): Composition | undefined {
   );
 }
 
-/** The part a look's own Mask (Appears in: subject / background, maybe inverted) keeps it to, or null. */
-export function lookPart(e: Pick<EffectInstance, 'appears' | 'appearsInvert'>): 'subject' | 'background' | null {
-  if (e.appears !== 6 && e.appears !== 7) return null;
-  return (e.appears === 6) !== e.appearsInvert ? 'subject' : 'background';
+export { allows, lookPart };
+
+/** The looks that are on but kept (by their own Mask) to a part this composition leaves out: they don't show. */
+export function lostLooks(
+  effects: readonly EffectInstance[],
+  s: Pick<SubjectSettings, 'show' | 'looks'>,
+): EffectInstance[] {
+  return effects.filter((e) => {
+    const p = lookPart(e);
+    return e.enabled && p !== null && !(allows(s.looks, p) && allows(s.show, p));
+  });
 }
 
-/** A composition's show or looks setting takes in that part. */
-export const allows = (p: SubjectPart, part: 'subject' | 'background') => p === 'all' || p === part;
-
-/**
- * Whether every look that's on is kept (by its own Mask) to a part this
- * composition leaves out, so none of them shows anywhere.
- */
+/** Whether every look that's on is lost that way, so none of them shows anywhere. */
 export function looksLost(effects: readonly EffectInstance[], s: Pick<SubjectSettings, 'show' | 'looks'>): boolean {
   const on = effects.filter((e) => e.enabled);
-  return (
-    on.length > 0 &&
-    on.every((e) => {
-      const p = lookPart(e);
-      return p !== null && !(allows(s.looks, p) && allows(s.show, p));
-    })
-  );
+  return on.length > 0 && lostLooks(on, s).length === on.length;
+}
+
+/** Look names as a list: "Halftone", "Halftone and VHS", "Halftone, VHS and Glitch". */
+function names(looks: readonly EffectInstance[]): string {
+  const n = [...new Set(looks.map((e) => effectById(e.effectId)?.name ?? 'A look'))];
+  return n.length > 1 ? `${n.slice(0, -1).join(', ')} and ${n.at(-1)}` : (n[0] ?? '');
 }
 
 // ─── Analysis helpers (the Track panel uses them too) ───────────────────────
@@ -177,6 +212,32 @@ export function refreshSubject(subjects: SubjectStore, next: Layer, toast?: (msg
   if (!next.subject?.on || next.kind === 'webcam') return;
   subjects.cancel(next.id);
   if (analysesItself(next) && subjects.info(next).status !== 'ready') startAnalysis(subjects, next, toast);
+}
+
+/**
+ * What analyses again by itself once an edit settles (ProApp): layers that
+ * analyse by themselves whose clip now shows more than was analysed (a longer
+ * canvas, a trim), or that undo / redo switched on or took to other analysis
+ * settings (as the same edit in the panel would; those have started already).
+ * Not after a Stop, while the layer wants what it did then. `prev` is each
+ * layer's analysis settings (`keys`) at the last check, or null to only note
+ * them (just loaded: nothing was edited).
+ */
+export function autoAnalyses(
+  subjects: Pick<SubjectStore, 'analysisKey' | 'info' | 'stoppedHere'>,
+  layers: readonly Layer[],
+  prev: ReadonlyMap<string, string> | null,
+): { keys: Map<string, string>; start: Layer[] } {
+  const keys = new Map(layers.map((l) => [l.id, `${!!l.subject?.on}|${subjects.analysisKey(l)}`]));
+  const start = layers.filter((l) => {
+    if (!analysesItself(l) || subjects.stoppedHere(l)) return false;
+    const info = subjects.info(l);
+    // More of the clip shows than was analysed, or than the analysis under way will.
+    if (info.reason === 'range' && (info.status === 'stale' || info.status === 'running')) return true;
+    const moved = !!prev && prev.get(l.id) !== keys.get(l.id);
+    return moved && (info.status === 'none' || (info.status === 'stale' && info.reason === 'settings'));
+  });
+  return { keys, start };
 }
 
 /** Re-render on every change in the store (masks, analysis progress, errors). */
@@ -224,10 +285,10 @@ export function statusWord(on: boolean, info: SubjectInfo): string {
 
 /** Where the model ran: the value and its caption, for the stats. */
 function ranOn(backend: string | undefined): [string, string] {
-  if (backend === 'webgpu') return ['GPU', 'model'];
-  if (backend === 'wasm') return ['CPU', 'model'];
+  if (backend === 'webgpu') return ['GPU', 'ran on'];
+  if (backend === 'wasm') return ['CPU', 'ran on'];
   if (backend === 'js') return ['Classic', 'no model'];
-  return ['—', 'model'];
+  return ['—', 'ran on'];
 }
 
 /** A duration in seconds, to a tenth below ten. */
@@ -249,14 +310,14 @@ const METHODS: ReadonlyArray<{ value: SegmentMethod; label: string; title: strin
   { value: 'classic', label: 'Classic', title: 'No download. Best on plain backgrounds.' },
 ];
 
-function methodNote(m: SegmentMethod): string {
+function methodNote(m: SegmentMethod, gpu: boolean): string {
   switch (m) {
     case 'ai-fast':
       return `U²-Net small: a ${FAST_MB} MB download, once, then cached. Works in any browser.`;
     case 'ai-hq':
-      return HAS_WEBGPU
+      return gpu
         ? `BiRefNet lite: the finest edges, on the GPU. A ${HQ_MB} MB download, once, then cached.`
-        : 'BiRefNet lite needs WebGPU, which this browser doesn’t have: use AI · fast or Classic.';
+        : 'BiRefNet lite needs WebGPU, which this browser or its graphics card doesn’t offer: use AI · fast or Classic.';
     case 'classic':
       return 'No download: finds what stands out from the colours at the edges of the frame. Best on plain backgrounds.';
   }
@@ -294,6 +355,7 @@ interface Props {
  */
 export function SubjectPanel({ studio, layer, media, subjects, toast, onOpenTrack }: Props) {
   useSubjectsVersion(subjects);
+  const gpu = useWebGpu(layer.subject?.method === 'ai-hq');
 
   if (!SEPARABLE_KINDS.includes(layer.kind)) {
     return (
@@ -327,11 +389,12 @@ export function SubjectPanel({ studio, layer, media, subjects, toast, onOpenTrac
     set(patch);
     refreshSubject(subjects, withSubject(layer, patch), toast);
   };
-  const lostLooks = looksLost(layer.effects, s);
+  const lost = lostLooks(layer.effects, s);
   const toggle = (on: boolean) => {
     const patch: Partial<SubjectSettings> = { on };
-    // Looks already kept to one part (Look › Mask) would vanish under "Look on subject": show them everywhere.
-    if (on && lostLooks && s.show === 'all') patch.looks = 'all';
+    // Looks already kept to one part (Look › Mask) would vanish under "Look on subject": put the looks everywhere
+    // (before separation they covered everything anyway).
+    if (on && lost.length && s.show === 'all') patch.looks = 'all';
     set(patch);
     if (on) refreshSubject(subjects, withSubject(layer, patch), toast);
     else subjects.cancel(layer.id);
@@ -344,8 +407,9 @@ export function SubjectPanel({ studio, layer, media, subjects, toast, onOpenTrac
 
   const preset = compositionOf(s);
   const looksOn = layer.effects.some((e) => e.enabled);
+  const allLost = looksLost(layer.effects, s);
   // Which part the lost looks are kept to (null when they're kept to different ones), and how to show them.
-  const lostParts = new Set(lostLooks ? layer.effects.filter((e) => e.enabled).map(lookPart) : []);
+  const lostParts = new Set(lost.map(lookPart));
   const lostPart = lostParts.size === 1 ? [...lostParts][0]! : null;
   const findLooks: Partial<SubjectSettings> = {
     looks: 'all',
@@ -364,7 +428,7 @@ export function SubjectPanel({ studio, layer, media, subjects, toast, onOpenTrac
           </p>
         )}
         <Segmented label="Method" value={s.method} options={METHODS} onChange={(m) => setAnalysis({ method: m })} />
-        <p className="muted small">{methodNote(s.method)}</p>
+        <p className="muted small">{methodNote(s.method, gpu)}</p>
 
         {moving && (
           <Segmented<SubjectSettings['area']>
@@ -419,10 +483,11 @@ export function SubjectPanel({ studio, layer, media, subjects, toast, onOpenTrac
             info={info}
             live={live}
             method={s.method}
+            gpu={gpu}
             analysable={canAnalyse(layer)}
             onAnalyse={analyse}
-            onStop={() => subjects.cancel(layer.id)}
-            onClassic={() => setAnalysis({ method: 'classic' })}
+            onStop={() => subjects.stop(layer)}
+            onMethod={(m) => setAnalysis({ method: m })}
           />
         )}
       </Group>
@@ -448,11 +513,12 @@ export function SubjectPanel({ studio, layer, media, subjects, toast, onOpenTrac
                 </button>
               </div>
             )}
-            {lostLooks && (
+            {lost.length > 0 && (
               <div className="subjnote">
                 <p className="muted small">
-                  Every look on this layer is set to appear only on the {lostPart ?? 'subject or the background'} (Look
-                  › Mask), which this composition leaves out, so none shows.
+                  {allLost ? 'Every look on this layer is' : `${names(lost)} ${lost.length === 1 ? 'is' : 'are'}`} set
+                  to appear only on the {lostPart ?? 'subject or the background'} (Look › Mask), which this composition
+                  leaves out, so {allLost ? 'none shows' : lost.length === 1 ? 'it doesn’t show' : 'they don’t show'}.
                 </p>
                 <button type="button" className="pbtn pbtn--small" onClick={() => set(findLooks)}>
                   {findLooks.show === s.show ? 'Looks on: Everything' : 'Show everything'}
@@ -610,44 +676,57 @@ function SubjectStatus({
   info,
   live,
   method,
+  gpu,
   analysable,
   onAnalyse,
   onStop,
-  onClassic,
+  onMethod,
 }: {
   info: SubjectInfo;
   live: boolean;
   method: SegmentMethod;
+  /** WebGPU can run here (AI · best downloads only then). */
+  gpu: boolean;
   /** It can be analysed as set up (a tracked area needs a track). */
   analysable: boolean;
   onAnalyse: () => void;
   onStop: () => void;
-  onClassic: () => void;
+  /** Switch to another method (the way out of a failure). */
+  onMethod: (m: SegmentMethod) => void;
 }) {
+  const hq = method === 'ai-hq';
   if (live) {
     return info.status === 'error' ? (
       <>
         <p className="subjerror" role="alert">
           {info.error ?? 'The webcam couldn’t be separated.'}
         </p>
+        {hq && (
+          <button type="button" className="pbtn pbtn--block pbtn--primary" onClick={() => onMethod('ai-fast')}>
+            Try AI · fast: any browser
+          </button>
+        )}
         {method !== 'classic' && (
-          <button type="button" className="pbtn pbtn--block" onClick={onClassic}>
+          <button type="button" className="pbtn pbtn--block" onClick={() => onMethod('classic')}>
             Try Classic: no download
           </button>
         )}
       </>
     ) : (
       <p className="subjline">
-        <span className={`led${info.frames ? ' led--basil' : ''}`} />
-        {info.frames
-          ? `Separated live, frame by frame${info.backend ? ` (${ranOn(info.backend)[0]})` : ''}`
-          : 'Separating live, as the webcam plays…'}
+        {info.job ? <span className="spinner" /> : <span className={`led${info.frames ? ' led--basil' : ''}`} />}
+        {info.job
+          ? jobText(info.job)
+          : info.frames
+            ? `Separated live, frame by frame${info.backend ? ` (${ranOn(info.backend)[0]})` : ''}`
+            : 'Separating live, as the webcam plays…'}
       </p>
     );
   }
 
-  const hq = method === 'ai-hq';
-  const analyseLabel = hq && !info.frames ? `Analyse · ${HQ_MB} MB` : 'Analyse';
+  // The size only while the model may not be downloaded yet (masks made on the GPU were made by AI · best).
+  const size = hq && gpu && info.backend !== 'webgpu' ? ` · ${HQ_MB} MB` : '';
+  const analyseLabel = `Analyse${info.frames ? '' : size}`;
   switch (info.status) {
     case 'running': {
       const pct = Math.round((info.job?.progress ?? 0) * 100);
@@ -677,7 +756,7 @@ function SubjectStatus({
               <b>{info.frames}</b> {info.frames === 1 ? 'mask' : 'masks'}
             </span>
             <span>
-              <b>{info.ms !== undefined ? secs(info.ms / 1000) : '—'}</b> seconds
+              <b>{info.ms !== undefined ? `${secs(info.ms / 1000)} s` : '—'}</b> to analyse
             </span>
             <span>
               <b>{where}</b> {caption}
@@ -698,7 +777,7 @@ function SubjectStatus({
               : 'Settings changed since the last analysis. The masks from before still show until it’s analysed again.'}
           </p>
           <button type="button" className="pbtn pbtn--block pbtn--primary" onClick={onAnalyse} disabled={!analysable}>
-            <Icon name="play" size={12} /> Analyse again{hq ? ` · ${HQ_MB} MB` : ''}
+            <Icon name="play" size={12} /> Analyse again{size}
           </button>
         </>
       );
@@ -708,28 +787,41 @@ function SubjectStatus({
           <p className="subjerror" role="alert">
             {info.error ?? 'The subject couldn’t be separated.'}
           </p>
-          {method !== 'classic' && (
-            <p className="muted small">Classic needs no download and works in every browser: worth a try.</p>
-          )}
-          <div className="btnrow btnrow--split">
-            {method !== 'classic' ? (
-              <button type="button" className="pbtn pbtn--primary" onClick={onClassic}>
-                Try Classic
+          {hq ? (
+            <>
+              <div className="btnrow btnrow--split">
+                <button type="button" className="pbtn pbtn--primary" onClick={() => onMethod('ai-fast')}>
+                  Try AI · fast
+                </button>
+                <button type="button" className="pbtn" onClick={() => onMethod('classic')}>
+                  Try Classic
+                </button>
+              </div>
+              <button type="button" className="pbtn pbtn--block" onClick={onAnalyse} disabled={!analysable}>
+                <Icon name="reset" size={14} /> Analyse again
               </button>
-            ) : (
-              <span />
-            )}
-            <button type="button" className="pbtn" onClick={onAnalyse} disabled={!analysable}>
-              <Icon name="reset" size={14} /> Analyse again
-            </button>
-          </div>
+            </>
+          ) : (
+            <div className="btnrow btnrow--split">
+              {method !== 'classic' ? (
+                <button type="button" className="pbtn pbtn--primary" onClick={() => onMethod('classic')}>
+                  Try Classic
+                </button>
+              ) : (
+                <span />
+              )}
+              <button type="button" className="pbtn" onClick={onAnalyse} disabled={!analysable}>
+                <Icon name="reset" size={14} /> Analyse again
+              </button>
+            </div>
+          )}
         </>
       );
     default:
       return (
         <>
           <p className="muted small">
-            {hq
+            {hq && gpu
               ? `Not separated yet. BiRefNet downloads ${HQ_MB} MB the first time (then it’s cached): start it when you’re ready.`
               : 'Not separated yet.'}
           </p>

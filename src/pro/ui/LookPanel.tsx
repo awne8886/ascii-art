@@ -10,12 +10,23 @@ import {
   type ParamValue,
   type ParamValues,
 } from '../effects/types';
-import { newEffect, SEPARABLE_KINDS, uid, type Appears, type EffectInstance, type Modulation } from '../model';
-import { effectsOf, setEffects, updateEffect, type Studio } from '../store';
+import {
+  allows,
+  lookPart,
+  newEffect,
+  SEPARABLE_KINDS,
+  uid,
+  type Appears,
+  type EffectInstance,
+  type Modulation,
+  type SubjectSettings,
+} from '../model';
+import { effectsOf, setEffects, updateEffect, updateLayer, type Studio } from '../store';
 import { loadLooks, lookName, saveLooks, type SavedLook } from '../storage';
 import { useEffectThumb, useStackThumb } from '../thumbs';
 import { ColorRow, Group, NumberBox, Segmented, Select, Slider, Switch } from './controls';
 import { Icon } from './icons';
+import { withSubject } from './SubjectPanel';
 
 const CAT_LABEL = new Map(CATEGORIES.map((c) => [c.id, c.label]));
 
@@ -161,6 +172,7 @@ export function LookPanel({ studio, owner, toast, onOpenSubject }: Props) {
           onSave={saveCurrent}
           separated={separated}
           separable={separable}
+          subject={ownerLayer?.subject}
           onOpenSubject={onOpenSubject}
           key={current.uid}
         />
@@ -377,6 +389,7 @@ function Editor({
   onSave,
   separated,
   separable,
+  subject,
   onOpenSubject,
 }: {
   studio: Studio;
@@ -387,11 +400,22 @@ function Editor({
   separated: boolean;
   /** The owner can be separated at all (type and shapes can't; the canvas goes by its layers). */
   separable: boolean;
+  /** The owner layer's subject settings (its composition), if it's a layer. */
+  subject?: SubjectSettings;
   onOpenSubject?: () => void;
 }) {
   const def = effectById(fx.effectId);
   const set = (patch: Partial<EffectInstance>, coalesce?: string) =>
     studio.commit(updateEffect(owner, fx.uid, patch), coalesce);
+  // Kept to a part its layer's composition (Subject tab) leaves out: it doesn't show.
+  const part = lookPart(fx);
+  const hidden =
+    owner !== null &&
+    separated &&
+    fx.enabled &&
+    part !== null &&
+    !!subject &&
+    !(allows(subject.looks, part) && allows(subject.show, part));
   if (!def) return <p className="muted small pad">This look isn’t available any more.</p>;
   const index = EFFECTS.indexOf(def);
   const swap = (d: number) => {
@@ -497,8 +521,9 @@ function Editor({
       </div>
 
       <Group
-        // Subject or background picked (up in "Appears in" too) with nothing separated: open, to say what it needs.
-        reveal={fx.appears >= 6 && !separated}
+        // Subject or background picked (up in "Appears in" too) with nothing separated, or with a composition that
+        // leaves that part out: open, to say so.
+        reveal={fx.appears >= 6 && (!separated || hidden)}
         title="Mask"
         icon="mask"
         defaultOpen={fx.appears !== 0}
@@ -509,11 +534,43 @@ function Editor({
         </div>
         {fx.appears >= 6 ? (
           separated ? (
-            owner === null && (
+            owner === null ? (
               <p className="muted small">
                 On the canvas, the subjects of every separated layer count; layers above (blended Normal) cover the ones
                 below.
               </p>
+            ) : (
+              hidden &&
+              subject &&
+              part && (
+                <div className="subjnote">
+                  <p className="muted small">
+                    This layer’s composition (Subject tab){' '}
+                    {allows(subject.show, part) ? `keeps its looks off the ${part}` : `hides the ${part}`}, so this look
+                    doesn’t show.
+                  </p>
+                  <div className="btnrow">
+                    <button
+                      type="button"
+                      className="pbtn pbtn--small"
+                      onClick={() =>
+                        studio.commit(
+                          updateLayer(owner, (l) =>
+                            withSubject(l, { looks: 'all', show: allows(subject.show, part) ? subject.show : 'all' }),
+                          ),
+                        )
+                      }
+                    >
+                      {allows(subject.show, part) ? 'Looks on: Everything' : 'Show everything'}
+                    </button>
+                    {onOpenSubject && (
+                      <button type="button" className="pbtn pbtn--small" onClick={onOpenSubject}>
+                        <Icon name="subject" size={13} /> Subject
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
             )
           ) : (
             <div className="subjnote">

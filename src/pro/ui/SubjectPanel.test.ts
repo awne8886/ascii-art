@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   defaultSubject,
   looksKeyFor,
+  looksPaper,
   newEffect,
   newLayer,
   newProject,
@@ -10,11 +11,12 @@ import {
   type Project,
   type SubjectKey,
 } from '../model';
-import { setEffects } from '../store';
+import { setEffects, updateEffect } from '../store';
 import { type AnalysisOutcome, type SubjectStore } from '../subject/store';
 import { type SubjectInfo, type SubjectStatus } from '../subject/types';
 import {
   analysesItself,
+  autoAnalyses,
   canAnalyse,
   COMPOSITIONS,
   compositionFor,
@@ -23,6 +25,7 @@ import {
   jobText,
   lookPart,
   looksLost,
+  lostLooks,
   refreshSubject,
   startAnalysis,
   statusWord,
@@ -104,6 +107,83 @@ describe('compositions', () => {
     expect(looksKeyFor([look({ params: { ...look().params, paper: '#ffffff' } })])).toBe('light');
   });
 
+  it('goes by the looks below a filter (VHS, CRT, Glitch…): their background shows through it', () => {
+    expect(looksKeyFor([newEffect('halftone'), newEffect('vhs')])).toBe('light');
+    expect(looksKeyFor([newEffect('dither-text'), newEffect('crt-screen')])).toBe('light');
+    expect(looksKeyFor([newEffect('ascii', 'Ink on paper'), newEffect('glitch')])).toBe('light');
+    expect(looksKeyFor([newEffect('ascii'), newEffect('glitch')])).toBe('dark');
+    expect(looksKeyFor([newEffect('halftone'), newEffect('film-prism'), newEffect('vhs')])).toBe('light');
+    // Only filters: no background known.
+    expect(looksKeyFor([newEffect('vhs')])).toBe('dark');
+    // A look that paints its own sky decides too.
+    expect(looksKeyFor([newEffect('halftone'), newEffect('stardust')])).toBe('dark');
+  });
+
+  it('goes by the looks that show in the composition (a look kept to a part it leaves out never reaches the key)', () => {
+    const onSubject = { show: 'all', looks: 'subject' } as const;
+    const ascii = newEffect('ascii');
+    const halftone = newEffect('halftone');
+    expect(
+      looksKeyFor(
+        [
+          { ...ascii, appears: 6 },
+          { ...halftone, appears: 7 },
+        ],
+        onSubject,
+      ),
+    ).toBe('dark');
+    expect(
+      looksKeyFor(
+        [
+          { ...halftone, appears: 6 },
+          { ...ascii, appears: 7 },
+        ],
+        onSubject,
+      ),
+    ).toBe('light');
+    // Inverted: kept to the other part.
+    expect(looksKeyFor([ascii, { ...halftone, appears: 6, appearsInvert: true }], onSubject)).toBe('dark');
+    // With no composition given, or one that shows it, the top look counts.
+    expect(
+      looksKeyFor([
+        { ...ascii, appears: 6 },
+        { ...halftone, appears: 7 },
+      ]),
+    ).toBe('light');
+    expect(
+      looksKeyFor(
+        [
+          { ...ascii, appears: 6 },
+          { ...halftone, appears: 7 },
+        ],
+        { show: 'all', looks: 'all' },
+      ),
+    ).toBe('light');
+    const c = COMPOSITIONS.find((x) => x.label === 'Characters over subject')!;
+    expect(
+      compositionFor(c, [
+        { ...ascii, appears: 6 },
+        { ...halftone, appears: 7 },
+      ]).looksKey,
+    ).toBe('dark');
+    expect(
+      compositionFor(c, [
+        { ...halftone, appears: 6 },
+        { ...ascii, appears: 7 },
+      ]).looksKey,
+    ).toBe('light');
+  });
+
+  it('knows the looks’ background colour, for keying one neither dark nor light', () => {
+    const [r, g, b] = looksPaper([newEffect('ascii', 'Blueprint')])!;
+    expect([r * 255, g * 255, b * 255].map(Math.round)).toEqual([0x0b, 0x2a, 0x5b]);
+    expect(looksPaper([newEffect('ascii')])).toEqual([0, 0, 0]);
+    expect(looksPaper([newEffect('halftone'), newEffect('vhs')])).toEqual(looksPaper([newEffect('halftone')]));
+    expect(looksPaper([])).toBeNull();
+    expect(looksPaper([newEffect('vhs')])).toBeNull();
+    expect(looksPaper([{ ...newEffect('ascii'), enabled: false }])).toBeNull();
+  });
+
   it('the characters preset keys out the looks’ own paper', () => {
     const c = COMPOSITIONS.find((x) => x.label === 'Characters over subject')!;
     expect(compositionFor(c, [newEffect('ascii')]).looksKey).toBe('dark');
@@ -127,6 +207,38 @@ describe('compositions', () => {
     // Set against the looks on purpose, or off: left alone.
     expect(keyAfter(layer('dark', [newEffect('halftone')]), [newEffect('dither-text')])).toBe('dark');
     expect(keyAfter(layer('off', [newEffect('ascii')]), [newEffect('halftone')])).toBe('off');
+    // A filter added over the looks, or switched off and on again, keeps the key their background wants.
+    const halftone = newEffect('halftone');
+    const vhs = newEffect('vhs');
+    expect(keyAfter(layer('light', [halftone]), [halftone, vhs])).toBe('light');
+    let p = project(layer('light', [halftone, vhs]));
+    p = updateEffect('L1', vhs.uid, { enabled: false })(p);
+    expect(p.layers[0]!.subject!.looksKey).toBe('light');
+    p = updateEffect('L1', vhs.uid, { enabled: true })(p);
+    expect(p.layers[0]!.subject!.looksKey).toBe('light');
+  });
+
+  it('a key follows a look kept to a part its composition leaves out', () => {
+    const ascii = newEffect('ascii');
+    const halftone = newEffect('halftone');
+    // "Characters over subject" on ASCII, then a Halftone meant for the background.
+    let p: Project = {
+      ...newProject(),
+      layers: [
+        {
+          ...withSubject(newLayer('sample', 'Sample clip', { id: 'L1' }), {
+            on: true,
+            looks: 'subject',
+            looksKey: 'dark',
+          }),
+          effects: [ascii],
+        },
+      ],
+    };
+    p = setEffects('L1', (fx) => [...fx, halftone])(p);
+    expect(p.layers[0]!.subject!.looksKey).toBe('light');
+    p = updateEffect('L1', halftone.uid, { appears: 7 })(p);
+    expect(p.layers[0]!.subject!.looksKey).toBe('dark');
   });
 
   it('an older saved subject (no key) reads as keyed off', () => {
@@ -229,6 +341,62 @@ describe('looks kept to a part the composition leaves out', () => {
     expect(looksLost([look({ appears: 7 })], { show: 'subject', looks: 'all' })).toBe(true);
     expect(looksLost([look({ appears: 7 })], { show: 'all', looks: 'all' })).toBe(false);
     expect(looksLost([], onSubject)).toBe(false);
+  });
+
+  it('lists each look kept out, even while others show', () => {
+    const onSubject = { show: 'all', looks: 'subject' } as const;
+    const kept = look({ appears: 7 });
+    expect(lostLooks([look({ appears: 6 }), kept], onSubject)).toEqual([kept]);
+    expect(lostLooks([look({ appears: 6 }), look({ appears: 7, enabled: false })], onSubject)).toEqual([]);
+    expect(lostLooks([look({ appears: 6 }), kept], { show: 'all', looks: 'all' })).toEqual([]);
+  });
+});
+
+describe('autoAnalyses', () => {
+  const clip = withSubject(newLayer('sample', 'Sample clip', { id: 'L1' }), { on: true, method: 'classic' });
+
+  /** A store that says `info` for every layer, keyed by method and rate, maybe stopped. */
+  const store = (info: Partial<SubjectInfo>, stopped = false) =>
+    ({
+      analysisKey: (l: Layer) => `${l.subject?.method}|${l.subject?.rate}`,
+      info: (): SubjectInfo => ({ status: 'none', frames: 0, from: 0, to: 0, ...info }),
+      stoppedHere: () => stopped,
+    }) as unknown as SubjectStore;
+  const started = (s: SubjectStore, layers: Layer[], prev: Map<string, string> | null) =>
+    autoAnalyses(s, layers, prev).start.map((l) => l.id);
+  const keysOf = (l: Layer) => autoAnalyses(store({}), [l], null).keys;
+
+  it('analyses again when more of the clip shows than was analysed, or than the analysis under way will', () => {
+    expect(started(store({ status: 'stale', reason: 'range' }), [clip], keysOf(clip))).toEqual(['L1']);
+    expect(started(store({ status: 'running', reason: 'range' }), [clip], keysOf(clip))).toEqual(['L1']);
+    expect(started(store({ status: 'running' }), [clip], keysOf(clip))).toEqual([]);
+    // Not after a Stop (for what the layer wants now), nor with the big model.
+    expect(started(store({ status: 'stale', reason: 'range' }, true), [clip], keysOf(clip))).toEqual([]);
+    const hq = withSubject(clip, { method: 'ai-hq' });
+    expect(started(store({ status: 'stale', reason: 'range' }), [hq], keysOf(hq))).toEqual([]);
+  });
+
+  it('analyses what undo / redo switched on or took to other settings', () => {
+    const off = withSubject(clip, { on: false });
+    const rate5 = withSubject(clip, { rate: 5 });
+    // Redo switched it on.
+    expect(started(store({ status: 'none' }), [clip], keysOf(off))).toEqual(['L1']);
+    // Undo took it back to masks from other settings.
+    expect(started(store({ status: 'stale', reason: 'settings' }), [clip], keysOf(rate5))).toEqual(['L1']);
+    // Undo brought a removed layer back without masks.
+    expect(started(store({ status: 'none' }), [clip], new Map())).toEqual(['L1']);
+    // Nothing moved, or masks that fit, or an edit that started its own analysis, or a failure for these settings.
+    expect(started(store({ status: 'none' }), [clip], keysOf(clip))).toEqual([]);
+    for (const status of ['ready', 'running', 'error'] as const)
+      expect(started(store({ status }), [clip], keysOf(off))).toEqual([]);
+    // Stopped for these settings.
+    expect(started(store({ status: 'none' }, true), [clip], keysOf(off))).toEqual([]);
+  });
+
+  it('only notes the settings when just loaded', () => {
+    const r = autoAnalyses(store({ status: 'none' }), [clip], null);
+    expect(r.start).toEqual([]);
+    expect(r.keys.get('L1')).toBe('true|classic|10');
   });
 });
 

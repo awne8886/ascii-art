@@ -1,5 +1,11 @@
 import { type SegmentMethod } from '../settings';
-import { SUPERSEDED, type SegmentPhase, type SegmentRequest, type SegmentResponse } from './protocol';
+import {
+  SUPERSEDED,
+  type SegmentCancel,
+  type SegmentPhase,
+  type SegmentRequest,
+  type SegmentResponse,
+} from './protocol';
 import { type SoftMask } from './refine';
 
 export interface SegmentProgress {
@@ -71,11 +77,15 @@ export function isSuperseded(e: unknown): boolean {
   return e instanceof Error && e.message === SUPERSEDED;
 }
 
+const cancelled = () => new DOMException('Separation cancelled.', 'AbortError');
+
 /**
  * Separate subject from background. The image is copied to the worker, so
  * the caller keeps its pixels. Calls with the same `key` while one is running
  * share that run. A request still waiting when a newer one arrives in the
- * same `lane` fails (see isSuperseded); with lane null it always runs.
+ * same `lane` fails (see isSuperseded); with lane null it always runs. When
+ * `signal` aborts, the request fails with an AbortError and the worker drops
+ * it if it hasn't started (a model download only it waited on stops too).
  */
 export function segment(
   key: string,
@@ -83,21 +93,33 @@ export function segment(
   method: SegmentMethod,
   onProgress?: (p: SegmentProgress) => void,
   lane: string | null = DEFAULT_LANE,
+  signal?: AbortSignal,
 ): Promise<SegmentResult> {
   const running = inflight.get(key);
   if (running) {
     if (onProgress) running.listeners.add(onProgress);
     return running.promise;
   }
+  if (signal?.aborted) return Promise.reject(cancelled());
   const id = nextId++;
   const listeners = new Set<(p: SegmentProgress) => void>(onProgress ? [onProgress] : []);
   const req: SegmentRequest = { id, method, rgba: image.rgba, width: image.width, height: image.height, lane };
+  let onAbort: (() => void) | null = null;
   const promise = new Promise<SegmentResult>((resolve, reject) => {
     pending.set(id, { method, resolve, reject, listeners });
     getWorker().postMessage(req);
+    onAbort = () => {
+      if (!pending.delete(id)) return;
+      worker?.postMessage({ type: 'cancel', ids: [id] } satisfies SegmentCancel);
+      reject(cancelled());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
   inflight.set(key, { promise, listeners });
-  const done = () => inflight.delete(key);
+  const done = () => {
+    inflight.delete(key);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+  };
   promise.then(done, done);
   return promise;
 }

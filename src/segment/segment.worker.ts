@@ -12,7 +12,7 @@ import { classicSaliency } from './classic';
 import { Lanes } from './lanes';
 import { MODELS, modelUrl, type ModelId } from './models';
 import { guidedFilter, resizeBilinear } from './refine';
-import { SUPERSEDED, type SegmentRequest, type SegmentResponse } from './protocol';
+import { SUPERSEDED, type SegmentMessage, type SegmentRequest, type SegmentResponse } from './protocol';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -27,10 +27,12 @@ interface ModelFile {
   gpu: boolean;
 }
 
-/** A model file on its way, and how many requests wait on it. */
+/** A model file on its way, and the requests waiting on it. */
 interface Download {
   file: Promise<ModelFile>;
-  waiting: number;
+  /** Ids of the requests waiting on it; the last one to give up (cancelled) stops the download. */
+  waiting: Set<number>;
+  ctrl: AbortController;
 }
 
 /** Model files downloading (or downloaded, until their session starts or nothing waits on them), per model. */
@@ -69,7 +71,12 @@ async function webGpu(): Promise<Gpu> {
 }
 
 /** Fetch a model with progress, from the Cache API when we've downloaded it before. */
-async function fetchModel(url: string, id: number, mb: number): Promise<ArrayBuffer> {
+async function fetchModel(
+  url: string,
+  mb: number,
+  signal: AbortSignal,
+  progress: (loaded: number, total: number) => void,
+): Promise<ArrayBuffer> {
   const cache = await caches.open(CACHE).catch(() => null);
   try {
     const hit = await cache?.match(url);
@@ -77,7 +84,9 @@ async function fetchModel(url: string, id: number, mb: number): Promise<ArrayBuf
   } catch {
     // Unreadable cache entry: download again.
   }
-  const res = await fetch(url);
+  // Say it's downloading before the first byte (a slow server can take a while to answer).
+  progress(0, mb * 1e6);
+  const res = await fetch(url, { signal });
   if (!res.ok || !res.body) throw new Error(`Model download failed (HTTP ${res.status}).`);
   const total = Number(res.headers.get('content-length')) || mb * 1e6;
   const reader = res.body.getReader();
@@ -92,7 +101,7 @@ async function fetchModel(url: string, id: number, mb: number): Promise<ArrayBuf
     const now = performance.now();
     if (now - lastPost > 100) {
       lastPost = now;
-      post({ type: 'progress', id, phase: 'download', loaded, total });
+      progress(loaded, total);
     }
   }
   const buf = new Uint8Array(loaded);
@@ -112,24 +121,29 @@ async function fetchModel(url: string, id: number, mb: number): Promise<ArrayBuf
 /**
  * The model's file for this browser (fp16 or fp32 on the GPU, else WebAssembly), downloaded once for every
  * request that waits on it. A failed download fails those; the next request to arrive tries again.
+ * Progress goes out under a request still waiting (the client passes it to every request for the model),
+ * else under `id`, the one that asked.
  */
 function download(model: ModelId, id: number): Download {
   const had = files.get(model);
   if (had) return had;
+  const ctrl = new AbortController();
+  const waiting = new Set<number>();
   const file = (async () => {
     const spec = MODELS[model];
     const support = spec.webgpu ? await webGpu() : 'none';
     const variant =
       support === 'fp16' ? spec.webgpu : support === 'fp32' ? (spec.webgpuFp32 ?? spec.webgpu) : spec.wasm;
     if (!variant) {
-      throw new Error(
-        'The high-quality model needs WebGPU (a recent Chrome, Edge or Safari), which isn’t available here.',
-      );
+      throw new Error(`${spec.label} needs WebGPU, which this browser or its graphics card doesn’t offer.`);
     }
-    const bytes = await fetchModel(modelUrl(spec, variant.file), id, variant.mb);
+    const bytes = await fetchModel(modelUrl(spec, variant.file), variant.mb, ctrl.signal, (loaded, total) => {
+      const [to = id] = waiting;
+      post({ type: 'progress', id: to, phase: 'download', loaded, total });
+    });
     return { bytes, gpu: variant !== spec.wasm };
   })();
-  const dl: Download = { file, waiting: 0 };
+  const dl: Download = { file, waiting, ctrl };
   files.set(model, dl);
   file.catch(() => release(model, dl));
   return dl;
@@ -252,11 +266,36 @@ async function handle(req: SegmentRequest, dl: Download | null = null): Promise<
 
 // Model requests one at a time: onnxruntime can't run two inferences on a session at once. Within a lane
 // only the newest request matters, so older ones still waiting in the queue are dropped; requests without
-// a lane (a clip analysed frame by frame) all run, in order.
+// a lane (a clip analysed frame by frame) all run, in order, unless their caller cancels them.
 let queue = Promise.resolve();
 const lanes = new Lanes();
-self.onmessage = (e: MessageEvent<SegmentRequest>) => {
-  const req = e.data;
+/** Model requests not run yet (waiting on their download, or queued), and those of them cancelled. */
+const waitingIds = new Set<number>();
+const cancelled = new Set<number>();
+
+/**
+ * Requests given up on: they won't run, and a download only they waited on stops (the next request for
+ * that model starts afresh, from the cache if it got that far).
+ */
+function cancel(ids: number[]): void {
+  for (const id of ids) {
+    if (!waitingIds.has(id)) continue;
+    cancelled.add(id);
+    for (const [model, dl] of files) {
+      if (!dl.waiting.delete(id) || dl.waiting.size) continue;
+      release(model, dl);
+      dl.ctrl.abort();
+    }
+  }
+}
+
+self.onmessage = (e: MessageEvent<SegmentMessage>) => {
+  const msg = e.data;
+  if ('ids' in msg) {
+    cancel(msg.ids);
+    return;
+  }
+  const req = msg;
   lanes.arrive(req.lane, req.id);
   // Classic needs no model: it never waits behind a download, a session start or an inference
   // (its path in handle() is synchronous, so it runs to completion right here).
@@ -268,15 +307,21 @@ self.onmessage = (e: MessageEvent<SegmentRequest>) => {
   // behind a download it doesn't need; requests for the same model wait on the same one, in order.
   const model = req.method;
   const dl = sessions.has(model) ? null : download(model, req.id);
-  if (dl) dl.waiting++;
+  dl?.waiting.add(req.id);
+  waitingIds.add(req.id);
   const enqueue = () => {
     queue = queue
-      .then(() =>
-        lanes.superseded(req.lane, req.id) ? post({ type: 'error', id: req.id, message: SUPERSEDED }) : handle(req, dl),
-      )
+      .then(() => {
+        waitingIds.delete(req.id);
+        // Cancelled: its caller has already moved on (no answer).
+        if (cancelled.delete(req.id)) return;
+        return lanes.superseded(req.lane, req.id)
+          ? post({ type: 'error', id: req.id, message: SUPERSEDED })
+          : handle(req, dl);
+      })
       .finally(() => {
         // The last request waiting on a file that never started a session (all overtaken) lets it go.
-        if (dl && --dl.waiting === 0) release(model, dl);
+        if (dl && dl.waiting.delete(req.id) && !dl.waiting.size) release(model, dl);
       });
   };
   if (dl) void dl.file.then(enqueue, enqueue);

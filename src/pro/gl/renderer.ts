@@ -4,6 +4,8 @@ import { followShift, invert3, layerQuad, squareToQuad, type Mat3 } from '../geo
 import {
   resolveParams,
   layerActive,
+  looksKeyFor,
+  looksPaper,
   mediaTime,
   trackAt,
   type CanvasFinish,
@@ -825,6 +827,7 @@ export class ProRenderer {
     h: number,
     set: SubjectSettings,
     subj: SubjectBind,
+    effects: readonly EffectInstance[],
   ): Target {
     const out = (owner.matteOut = this.sized(owner.matteOut, w, h));
     const p = this.fixed('subject-matte', SUBJECT_MATTE_FS);
@@ -836,6 +839,11 @@ export class ProRenderer {
     this.f(p, 'u_looksPart', PARTS[set.looks] ?? 0);
     this.f(p, 'u_looksBlend', set.looksBlend);
     this.f(p, 'u_looksKey', KEYS[set.looksKey] ?? 0);
+    // The looks' own background colour, for a key that suits it (one set against the looks keys as it says).
+    const paper =
+      set.looksKey !== 'off' && set.looksKey === looksKeyFor(effects, set) ? looksPaper(effects, set) : null;
+    this.f(p, 'u_keyByColor', paper ? 1 : 0);
+    this.f(p, 'u_keyColor', ...(paper ?? [0, 0, 0]));
     // No looks: nothing to lay over the picture (a Screen of the picture over itself would brighten it).
     this.f(p, 'u_looksMix', hasLooks ? Math.max(0, Math.min(1, set.looksMix)) : 0);
     this.f(p, 'u_showPart', PARTS[set.show] ?? 0);
@@ -982,7 +990,7 @@ export class ProRenderer {
         // Background treatment → looks (which see the mask) → only the parts that show, looks where they go.
         const picture = this.subjectPrep(owner, owner.srcTex, bw, bh, set, subj)?.tex ?? owner.srcTex;
         const looks = this.runEffects(owner, picture, bw, bh, layer.effects, fxCtx);
-        tex = this.subjectMatte(owner, picture, looks.tex, !!looks.target, bw, bh, set, subj).tex;
+        tex = this.subjectMatte(owner, picture, looks.tex, !!looks.target, bw, bh, set, subj, layer.effects).tex;
       } else tex = this.runEffects(owner, owner.srcTex, bw, bh, layer.effects, fxCtx).tex;
       const glowed = this.glow(owner, tex, bw, bh, layer.finish, still);
       if (glowed) tex = glowed.tex;

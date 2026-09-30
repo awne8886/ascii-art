@@ -20,7 +20,6 @@ import {
 import { SAMPLE_DURATION } from './sources';
 import { addLayer, removeLayer, updateLayer, useStudio } from './store';
 import { clearSavedProject, loadProject, saveMediaFile, saveProject } from './storage';
-import { analysisRange } from './subject/masks';
 import { SubjectStore } from './subject/store';
 import { TEMPLATES, type Template } from './templates';
 import { PanelTitle } from './ui/controls';
@@ -40,7 +39,7 @@ import {
   type SceneOptions,
 } from './ui/panels';
 import { AddPanel, LayersPanel } from './ui/rail';
-import { analysesItself, refreshSubject, startAnalysis, SubjectPanel } from './ui/SubjectPanel';
+import { autoAnalyses, refreshSubject, startAnalysis, SubjectPanel } from './ui/SubjectPanel';
 import { Timeline } from './ui/Timeline';
 import { Viewport, type Zoom } from './ui/Viewport';
 import './pro.css';
@@ -114,31 +113,26 @@ export function ProApp() {
   useEffect(() => () => media.dispose(), [media]);
   useEffect(() => () => subjects.dispose(), [subjects]);
   // Undo / redo can remove a layer, switch its subject off or restore other settings: analyses that no
-  // longer fit stop. Also keeps the store up with the canvas's length.
+  // longer fit stop (layers that analyse by themselves analyse again for the settings undo / redo lands on,
+  // below). Also keeps the store up with the canvas's length.
   useEffect(() => subjects.sync(project), [project, subjects]);
-  // A longer canvas or a trim can show more of a clip than was analysed: layers that analyse by themselves
-  // (AI · fast, Classic) analyse again once the edit settles. Stopping that holds until the range changes again.
-  const autoRange = useRef(new Map<string, string>());
+  // A longer canvas or a trim can show more of a clip than was analysed, and undo / redo can switch a
+  // subject on or land on other analysis settings (method, area, rate, track): layers that analyse by
+  // themselves (AI · fast, Classic) analyse again once the edit settles, as the same edit in the panel does
+  // (panel edits have started already). A Stop holds while the layer wants what it did when it was pressed.
+  const autoKeys = useRef<Map<string, string> | null>(null);
+  // Just loaded (no history): nothing was edited, so only note the settings.
+  const loaded = studio.state.past.length === 0 && studio.state.future.length === 0;
+  // Masks saved before a reload land a while after the project: check again then.
+  const [restored, setRestored] = useState(0);
   useEffect(() => {
     const t = setTimeout(() => {
-      for (const l of project.layers) {
-        const info = subjects.info(l);
-        // Masks that cover what shows end the hold: a later edit reaching as far again (after another analysis
-        // for less, say with another rate) analyses again.
-        if (info.status === 'ready') autoRange.current.delete(l.id);
-        if (!analysesItself(l) || info.reason !== 'range') continue;
-        if (info.status !== 'stale' && info.status !== 'running') continue;
-        const d = layerMediaDuration(l, media);
-        if (d === null) continue;
-        const r = analysisRange(l, d, project.canvas.duration);
-        const key = `${r.from}|${r.to}`;
-        if (autoRange.current.get(l.id) === key) continue;
-        autoRange.current.set(l.id, key);
-        startAnalysis(subjects, l, setToast);
-      }
+      const { keys, start } = autoAnalyses(subjects, project.layers, loaded ? null : autoKeys.current);
+      autoKeys.current = keys;
+      start.forEach((l) => startAnalysis(subjects, l, setToast));
     }, 600);
     return () => clearTimeout(t);
-  }, [project, subjects, media]);
+  }, [project, subjects, loaded, restored]);
 
   useEffect(() => {
     if (!toast) return;
@@ -246,7 +240,9 @@ export function ProApp() {
       if (saved && saved.layers.length) {
         studio.load(saved);
         // Masks analysed before the reload come back from IndexedDB.
-        void subjects.restore(saved);
+        void subjects.restore(saved).then(() => {
+          if (alive) setRestored((n) => n + 1);
+        });
       }
       const handed = takeHandoff();
       if (handed && handed.name !== 'pizza-sample.png') {

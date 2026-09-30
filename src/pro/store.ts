@@ -145,12 +145,13 @@ export function setEffects(owner: string | null, fn: (fx: EffectInstance[]) => E
 /**
  * A layer with other looks. A subject key that drops the looks' own
  * background follows them (dark paper to light and back) while it suits the
- * looks it was set for; one set against them stays as it is.
+ * looks it was set for (those that show in its composition); one set
+ * against them stays as it is.
  */
 function withLooks(l: Layer, effects: EffectInstance[]): Layer {
   const s = l.subject;
-  if (!s || s.looksKey === 'off' || s.looksKey !== looksKeyFor(l.effects)) return { ...l, effects };
-  const looksKey = looksKeyFor(effects);
+  if (!s || s.looksKey === 'off' || s.looksKey !== looksKeyFor(l.effects, s)) return { ...l, effects };
+  const looksKey = looksKeyFor(effects, s);
   return { ...l, effects, subject: looksKey === s.looksKey ? s : { ...s, looksKey } };
 }
 

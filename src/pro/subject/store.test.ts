@@ -219,3 +219,28 @@ describe('snapshot', () => {
     expect(store.maskAt(l, p, 1)!.a.version).not.toBe(first.a.version);
   });
 });
+
+describe('stop', () => {
+  it('holds while the layer wants what it did when stopped; any analysis starting ends that', async () => {
+    const l = clip();
+    store.sync(projectOf([l], 6));
+    let run = store.analyze(l);
+    store.stop(l);
+    expect(await run).toBe('cancelled');
+    expect(store.stoppedHere(l)).toBe(true);
+    // More of the clip showing, or other settings: something else is wanted.
+    store.sync(projectOf([l], 8));
+    expect(store.stoppedHere(l)).toBe(false);
+    // Back to what it was stopped for (undo): still held.
+    store.sync(projectOf([l], 6));
+    expect(store.stoppedHere(l)).toBe(true);
+    expect(store.stoppedHere(clip({ rate: 5 }))).toBe(false);
+
+    // Analysing again ends the hold; a cancel that isn't a Stop (undo, switching off, removal) doesn't hold.
+    run = store.analyze(l);
+    expect(store.stoppedHere(l)).toBe(false);
+    store.cancel(l.id);
+    expect(await run).toBe('cancelled');
+    expect(store.stoppedHere(l)).toBe(false);
+  });
+});

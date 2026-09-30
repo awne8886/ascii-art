@@ -114,22 +114,58 @@ export function defaultSubject(): SubjectSettings {
   };
 }
 
+/** The part a look's own Mask (Appears in: subject / background, maybe inverted) keeps it to, or null. */
+export function lookPart(e: Pick<EffectInstance, 'appears' | 'appearsInvert'>): 'subject' | 'background' | null {
+  if (e.appears !== 6 && e.appears !== 7) return null;
+  return (e.appears === 6) !== e.appearsInvert ? 'subject' : 'background';
+}
+
+/** A composition's show or looks setting takes in that part. */
+export const allows = (p: SubjectPart, part: 'subject' | 'background') => p === 'all' || p === part;
+
 /** A look's colour settings that are its own background (the key drops it). */
-const LOOK_BACKGROUNDS = ['paper', 'bg', 'board', 'fabric'];
+const LOOK_BACKGROUNDS = ['paper', 'bg', 'board', 'fabric', 'sky'];
 
 /**
- * The key that drops the looks' own background: 'light' when the top look
- * (the last one on: what the key sees) is drawn on light paper, else 'dark'.
+ * The looks' own background colour (0–1 RGB), as the key sees it: that of
+ * the first look on, from the top, that has its own background and shows in
+ * the composition `s` (a look its Mask keeps to a part the composition
+ * leaves out never reaches the key). Looks without one (VHS, CRT, Glitch…)
+ * are filters: the background of the looks below shows through them. Null
+ * when no look has one.
  */
-export function looksKeyFor(effects: readonly EffectInstance[]): 'dark' | 'light' {
-  const top = [...effects].reverse().find((e) => e.enabled && e.strength > 0 && effectById(e.effectId));
-  const def = top && effectById(top.effectId);
-  const p = def?.params.find((q) => q.type === 'color' && LOOK_BACKGROUNDS.includes(q.key));
-  const hex = top && p ? String(top.params[p.key] ?? p.default) : '';
-  if (!/^#[0-9a-f]{6}$/i.test(hex)) return 'dark';
-  const n = parseInt(hex.slice(1), 16);
-  const luma = (0.2126 * (n >> 16) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255;
-  return luma > 0.5 ? 'light' : 'dark';
+export function looksPaper(
+  effects: readonly EffectInstance[],
+  s?: Pick<SubjectSettings, 'show' | 'looks'>,
+): [number, number, number] | null {
+  for (let i = effects.length - 1; i >= 0; i--) {
+    const e = effects[i]!;
+    const def = e.enabled && e.strength > 0 ? effectById(e.effectId) : undefined;
+    if (!def) continue;
+    const part = lookPart(e);
+    if (s && part !== null && !(allows(s.looks, part) && allows(s.show, part))) continue;
+    const p = def.params.find((q) => q.type === 'color' && LOOK_BACKGROUNDS.includes(q.key));
+    // A filter over the looks below: their background shows through it.
+    if (!p) continue;
+    const hex = String(e.params[p.key] ?? p.default);
+    if (!/^#[0-9a-f]{6}$/i.test(hex)) return null;
+    const n = parseInt(hex.slice(1), 16);
+    return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
+  return null;
+}
+
+/**
+ * The key that drops the looks' own background (see looksPaper): 'light'
+ * when it's light paper, else 'dark' (also with no background known).
+ */
+export function looksKeyFor(
+  effects: readonly EffectInstance[],
+  s?: Pick<SubjectSettings, 'show' | 'looks'>,
+): 'dark' | 'light' {
+  const c = looksPaper(effects, s);
+  if (!c) return 'dark';
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2] > 0.5 ? 'light' : 'dark';
 }
 
 /** A layer riding along with another layer's tracked object. */

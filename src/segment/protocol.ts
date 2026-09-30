@@ -13,6 +13,15 @@ export interface SegmentRequest {
   lane: string | null;
 }
 
+/** Requests their caller gave up on: the worker doesn't run them if they haven't started (nor download for them). */
+export interface SegmentCancel {
+  type: 'cancel';
+  ids: number[];
+}
+
+/** What the worker is sent. */
+export type SegmentMessage = SegmentRequest | SegmentCancel;
+
 /** The error a request dropped for a newer one in its lane fails with. */
 export const SUPERSEDED = 'Superseded by a newer request.';
 
