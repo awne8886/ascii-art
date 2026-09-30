@@ -98,4 +98,19 @@ describe('LiveSubject', () => {
       vi.useRealTimers();
     }
   });
+
+  it('still asks in the background while something draws it (an export goes on there)', async () => {
+    vi.useFakeTimers();
+    try {
+      doc.hidden = true;
+      const live = new LiveSubject('L1', camera, 'classic', () => {});
+      live.drawn = performance.now();
+      live.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(asked).toHaveLength(1);
+      live.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

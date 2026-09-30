@@ -127,6 +127,8 @@ export const allows = (p: SubjectPart, part: 'subject' | 'background') => p === 
 const LOOK_BACKGROUNDS = ['paper', 'bg', 'board', 'fabric', 'sky'];
 /** Looks that repaint the whole frame on their own black and have no colour setting for it: the looks below don't show through. */
 const BLACK_GROUND = ['matrix-rain', 'retro-matrix', 'pixel-dither-glow'];
+/** Blend modes that leave what's below as it is under black and only brighten it elsewhere (Screen, Add, Lighten). */
+const BLACK_SHOWS_THROUGH = [2, 4, 7];
 
 /**
  * The looks' own background colour (0–1 RGB), as the key sees it: that of
@@ -134,7 +136,8 @@ const BLACK_GROUND = ['matrix-rain', 'retro-matrix', 'pixel-dither-glow'];
  * the composition `s` (a look its Mask keeps to a part the composition
  * leaves out never reaches the key). Looks without one (VHS, CRT, Glitch…)
  * are filters: the background of the looks below shows through them; those
- * on their own black (BLACK_GROUND) give black. Null when no look has one.
+ * on their own black (BLACK_GROUND) give black, unless blended so that black
+ * leaves what's below as it is (Screen, Add…). Null when no look has one.
  */
 export function looksPaper(
   effects: readonly EffectInstance[],
@@ -147,7 +150,7 @@ export function looksPaper(
     const part = lookPart(e);
     if (s && part !== null && !(allows(s.looks, part) && allows(s.show, part))) continue;
     const p = def.params.find((q) => q.type === 'color' && LOOK_BACKGROUNDS.includes(q.key));
-    if (!p && BLACK_GROUND.includes(def.id)) return [0, 0, 0];
+    if (!p && BLACK_GROUND.includes(def.id) && !BLACK_SHOWS_THROUGH.includes(e.blend)) return [0, 0, 0];
     // A filter over the looks below: their background shows through it.
     if (!p) continue;
     const hex = String(e.params[p.key] ?? p.default);

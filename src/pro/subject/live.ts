@@ -6,6 +6,8 @@ import { maskBytes, maskDims, type RawMask } from './masks';
 const LIVE_SIDE = 384;
 /** Pause before trying again after the model failed. */
 const RETRY_MS = 2000;
+/** In a background tab it asks only while something drew it this recently (an export goes on there; the preview doesn't). */
+const HIDDEN_IDLE_MS = 1000;
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -26,6 +28,8 @@ export class LiveSubject {
   backend = '';
   /** Its model downloading or starting, until the first mask. */
   job: SegmentProgress | null = null;
+  /** When something last drew its mask (performance.now(); the store notes it). */
+  drawn = -Infinity;
 
   private run = 0;
   /** Aborts the run's request in flight when it stops: the worker drops it (and a download only it waited on). */
@@ -82,8 +86,8 @@ export class LiveSubject {
   private async loop(run: number, signal: AbortSignal): Promise<void> {
     const alive = () => this.run === run;
     while (alive()) {
-      // A background tab shows none of it.
-      if (document.hidden) {
+      // A background tab shows none of it, unless an export still draws it there.
+      if (document.hidden && performance.now() - this.drawn >= HIDDEN_IDLE_MS) {
         await wait(250);
         continue;
       }

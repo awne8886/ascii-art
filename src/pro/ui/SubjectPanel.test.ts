@@ -128,6 +128,12 @@ describe('compositions', () => {
     expect(looksKeyFor([newEffect('halftone'), newEffect('matrix-rain'), newEffect('vhs')])).toBe('dark');
     // Off, it's out of the way.
     expect(looksKeyFor([newEffect('halftone'), { ...newEffect('matrix-rain'), enabled: false }])).toBe('light');
+    // Blended so its black leaves the paper below as it is (Screen, Add, Lighten): the paper shows.
+    for (const blend of [2, 4, 7])
+      expect(looksKeyFor([newEffect('halftone'), { ...newEffect('pixel-dither-glow'), blend }])).toBe('light');
+    // Multiply or Darken keep its black.
+    for (const blend of [1, 8])
+      expect(looksKeyFor([newEffect('halftone'), { ...newEffect('pixel-dither-glow'), blend }])).toBe('dark');
   });
 
   it('goes by the looks that show in the composition (a look kept to a part it leaves out never reaches the key)', () => {
@@ -227,8 +233,13 @@ describe('compositions', () => {
     expect(p.layers[0]!.subject!.looksKey).toBe('light');
     p = updateEffect('L1', vhs.uid, { enabled: true })(p);
     expect(p.layers[0]!.subject!.looksKey).toBe('light');
-    // A look on its own black added over paper takes the key to dark.
-    expect(keyAfter(layer('light', [halftone]), [halftone, newEffect('matrix-rain')])).toBe('dark');
+    // A look on its own black added over paper takes the key to dark, and back to light once screened over it.
+    const rain = newEffect('matrix-rain');
+    p = project(layer('light', [halftone]));
+    p = setEffects('L1', () => [halftone, rain])(p);
+    expect(p.layers[0]!.subject!.looksKey).toBe('dark');
+    p = updateEffect('L1', rain.uid, { blend: 2 })(p);
+    expect(p.layers[0]!.subject!.looksKey).toBe('light');
   });
 
   it('a key follows a look kept to a part its composition leaves out', () => {

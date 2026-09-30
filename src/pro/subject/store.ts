@@ -507,6 +507,7 @@ export class SubjectStore implements MaskSource {
       this.emitSoon();
     }
     live.wanted = performance.now();
+    live.sub.drawn = live.wanted;
     const raw = live.sub.latest;
     if (!raw) return null;
     const picture: [number, number] = [m.width, m.height];
