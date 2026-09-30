@@ -119,6 +119,17 @@ describe('compositions', () => {
     expect(looksKeyFor([newEffect('halftone'), newEffect('stardust')])).toBe('dark');
   });
 
+  it('stops at a look that repaints the frame on its own black (Matrix Rain…): the looks below never show', () => {
+    expect(looksKeyFor([newEffect('halftone'), newEffect('matrix-rain')])).toBe('dark');
+    expect(looksKeyFor([newEffect('halftone'), newEffect('retro-matrix')])).toBe('dark');
+    expect(looksKeyFor([newEffect('halftone'), newEffect('pixel-dither-glow')])).toBe('dark');
+    expect(looksPaper([newEffect('pixel-poster'), newEffect('matrix-rain')])).toEqual([0, 0, 0]);
+    // A filter over one still goes by it.
+    expect(looksKeyFor([newEffect('halftone'), newEffect('matrix-rain'), newEffect('vhs')])).toBe('dark');
+    // Off, it's out of the way.
+    expect(looksKeyFor([newEffect('halftone'), { ...newEffect('matrix-rain'), enabled: false }])).toBe('light');
+  });
+
   it('goes by the looks that show in the composition (a look kept to a part it leaves out never reaches the key)', () => {
     const onSubject = { show: 'all', looks: 'subject' } as const;
     const ascii = newEffect('ascii');
@@ -216,6 +227,8 @@ describe('compositions', () => {
     expect(p.layers[0]!.subject!.looksKey).toBe('light');
     p = updateEffect('L1', vhs.uid, { enabled: true })(p);
     expect(p.layers[0]!.subject!.looksKey).toBe('light');
+    // A look on its own black added over paper takes the key to dark.
+    expect(keyAfter(layer('light', [halftone]), [halftone, newEffect('matrix-rain')])).toBe('dark');
   });
 
   it('a key follows a look kept to a part its composition leaves out', () => {
@@ -391,6 +404,21 @@ describe('autoAnalyses', () => {
       expect(started(store({ status }), [clip], keysOf(off))).toEqual([]);
     // Stopped for these settings.
     expect(started(store({ status: 'none' }, true), [clip], keysOf(off))).toEqual([]);
+  });
+
+  it('analyses what an edit since the last check stopped on the way, though it landed back (undo + redo, Delete + undo)', () => {
+    const touched = new Set(['L1']);
+    const run = (s: SubjectStore, prev: Map<string, string> | null) =>
+      autoAnalyses(s, [clip], prev, touched).start.map((l) => l.id);
+    expect(run(store({ status: 'none' }), keysOf(clip))).toEqual(['L1']);
+    expect(run(store({ status: 'stale', reason: 'settings' }), keysOf(clip))).toEqual(['L1']);
+    // Masks that fit, an analysis under way or a failure for these settings, a Stop, or just loaded: left alone.
+    for (const status of ['ready', 'running', 'error'] as const)
+      expect(run(store({ status }), keysOf(clip))).toEqual([]);
+    expect(run(store({ status: 'none' }, true), keysOf(clip))).toEqual([]);
+    expect(run(store({ status: 'none' }), null)).toEqual([]);
+    // Another layer touched: not this one.
+    expect(autoAnalyses(store({ status: 'none' }), [clip], keysOf(clip), new Set(['L2'])).start).toEqual([]);
   });
 
   it('only notes the settings when just loaded', () => {

@@ -221,23 +221,34 @@ export function refreshSubject(subjects: SubjectStore, next: Layer, toast?: (msg
  * settings (as the same edit in the panel would; those have started already).
  * Not after a Stop, while the layer wants what it did then. `prev` is each
  * layer's analysis settings (`keys`) at the last check, or null to only note
- * them (just loaded: nothing was edited).
+ * them (just loaded: nothing was edited). `touched`: layers whose settings
+ * changed at some edit since that check, even if they're back to what it saw
+ * (a quick undo + redo, or Delete + undo, stops the analysis on the way).
  */
 export function autoAnalyses(
   subjects: Pick<SubjectStore, 'analysisKey' | 'info' | 'stoppedHere'>,
   layers: readonly Layer[],
   prev: ReadonlyMap<string, string> | null,
+  touched?: ReadonlySet<string>,
 ): { keys: Map<string, string>; start: Layer[] } {
-  const keys = new Map(layers.map((l) => [l.id, `${!!l.subject?.on}|${subjects.analysisKey(l)}`]));
+  const keys = subjectKeys(subjects, layers);
   const start = layers.filter((l) => {
     if (!analysesItself(l) || subjects.stoppedHere(l)) return false;
     const info = subjects.info(l);
     // More of the clip shows than was analysed, or than the analysis under way will.
     if (info.reason === 'range' && (info.status === 'stale' || info.status === 'running')) return true;
-    const moved = !!prev && prev.get(l.id) !== keys.get(l.id);
+    const moved = !!prev && (prev.get(l.id) !== keys.get(l.id) || !!touched?.has(l.id));
     return moved && (info.status === 'none' || (info.status === 'stale' && info.reason === 'settings'));
   });
   return { keys, start };
+}
+
+/** Each layer's subject switch and analysis settings, as autoAnalyses compares them. */
+export function subjectKeys(
+  subjects: Pick<SubjectStore, 'analysisKey'>,
+  layers: readonly Layer[],
+): Map<string, string> {
+  return new Map(layers.map((l) => [l.id, `${!!l.subject?.on}|${subjects.analysisKey(l)}`]));
 }
 
 /** Re-render on every change in the store (masks, analysis progress, errors). */

@@ -283,6 +283,14 @@ export class SubjectStore implements MaskSource {
       const l = project.layers.find((x) => x.id === id);
       if (!l?.subject?.on || this.analysisKey(l) !== j.key) this.cancel(id);
     }
+    // Webcams whose separation is off, or that are gone: stop, dropping the request in flight (and a model
+    // download only it waited on). One only not drawn for now stops by itself (watchLive) and lets it finish.
+    for (const [id, l] of this.live) {
+      const layer = project.layers.find((x) => x.id === id);
+      if (layer?.kind === 'webcam' && layer.subject?.on) continue;
+      l.sub.stop();
+      this.live.delete(id);
+    }
     if (project.canvas.duration !== this.canvasDuration) {
       this.canvasDuration = project.canvas.duration;
       this.emit();
@@ -518,8 +526,11 @@ export class SubjectStore implements MaskSource {
     this.liveTimer = setInterval(() => {
       const now = performance.now();
       for (const [id, l] of this.live) {
+        // A background tab draws nothing but still has the webcam: keep it (and a model download under way).
+        if (document.hidden) l.wanted = now;
         if (now - l.wanted < LIVE_IDLE_MS) continue;
-        l.sub.stop();
+        // Hidden or out of its time for now: its model download (if any) carries on for when it shows again.
+        l.sub.stop(false);
         this.live.delete(id);
       }
       if (!this.live.size && this.liveTimer) {

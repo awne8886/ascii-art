@@ -125,14 +125,16 @@ export const allows = (p: SubjectPart, part: 'subject' | 'background') => p === 
 
 /** A look's colour settings that are its own background (the key drops it). */
 const LOOK_BACKGROUNDS = ['paper', 'bg', 'board', 'fabric', 'sky'];
+/** Looks that repaint the whole frame on their own black and have no colour setting for it: the looks below don't show through. */
+const BLACK_GROUND = ['matrix-rain', 'retro-matrix', 'pixel-dither-glow'];
 
 /**
  * The looks' own background colour (0–1 RGB), as the key sees it: that of
  * the first look on, from the top, that has its own background and shows in
  * the composition `s` (a look its Mask keeps to a part the composition
  * leaves out never reaches the key). Looks without one (VHS, CRT, Glitch…)
- * are filters: the background of the looks below shows through them. Null
- * when no look has one.
+ * are filters: the background of the looks below shows through them; those
+ * on their own black (BLACK_GROUND) give black. Null when no look has one.
  */
 export function looksPaper(
   effects: readonly EffectInstance[],
@@ -145,6 +147,7 @@ export function looksPaper(
     const part = lookPart(e);
     if (s && part !== null && !(allows(s.looks, part) && allows(s.show, part))) continue;
     const p = def.params.find((q) => q.type === 'color' && LOOK_BACKGROUNDS.includes(q.key));
+    if (!p && BLACK_GROUND.includes(def.id)) return [0, 0, 0];
     // A filter over the looks below: their background shows through it.
     if (!p) continue;
     const hex = String(e.params[p.key] ?? p.default);

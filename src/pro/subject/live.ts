@@ -28,6 +28,8 @@ export class LiveSubject {
   job: SegmentProgress | null = null;
 
   private run = 0;
+  /** Aborts the run's request in flight when it stops: the worker drops it (and a download only it waited on). */
+  private ctrl: AbortController | null = null;
   private asked = 0;
   private canvas: HTMLCanvasElement | null = null;
 
@@ -47,11 +49,19 @@ export class LiveSubject {
   start(): void {
     if (this.run) return;
     this.run = ++runs;
-    void this.loop(this.run);
+    this.ctrl = new AbortController();
+    void this.loop(this.run, this.ctrl.signal);
   }
 
-  stop(): void {
+  /**
+   * Stop asking. `cancel` (separation off, the layer gone, another method):
+   * also drop the request in flight. Without it (nothing draws the layer for
+   * now) that request stays, so a model download under way carries on.
+   */
+  stop(cancel = true): void {
     this.run = 0;
+    if (cancel) this.ctrl?.abort();
+    this.ctrl = null;
   }
 
   private grab(): ImageData | null {
@@ -69,9 +79,14 @@ export class LiveSubject {
     return ctx.getImageData(0, 0, w, h);
   }
 
-  private async loop(run: number): Promise<void> {
+  private async loop(run: number, signal: AbortSignal): Promise<void> {
     const alive = () => this.run === run;
     while (alive()) {
+      // A background tab shows none of it.
+      if (document.hidden) {
+        await wait(250);
+        continue;
+      }
       const image = this.grab();
       if (!image) {
         await wait(100);
@@ -86,7 +101,7 @@ export class LiveSubject {
           this.onChange('progress');
         };
         // Keys unique to this run: a stopped one's request still in flight is never shared.
-        const r = await segment(`${lane}:${run}:${++this.asked}`, input, this.method, onProgress, lane);
+        const r = await segment(`${lane}:${run}:${++this.asked}`, input, this.method, onProgress, lane, signal);
         if (!alive()) return;
         this.job = null;
         this.previous = this.latest;

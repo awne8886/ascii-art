@@ -39,7 +39,7 @@ import {
   type SceneOptions,
 } from './ui/panels';
 import { AddPanel, LayersPanel } from './ui/rail';
-import { autoAnalyses, refreshSubject, startAnalysis, SubjectPanel } from './ui/SubjectPanel';
+import { autoAnalyses, refreshSubject, startAnalysis, SubjectPanel, subjectKeys } from './ui/SubjectPanel';
 import { Timeline } from './ui/Timeline';
 import { Viewport, type Zoom } from './ui/Viewport';
 import './pro.css';
@@ -121,13 +121,23 @@ export function ProApp() {
   // themselves (AI · fast, Classic) analyse again once the edit settles, as the same edit in the panel does
   // (panel edits have started already). A Stop holds while the layer wants what it did when it was pressed.
   const autoKeys = useRef<Map<string, string> | null>(null);
+  // Layers whose settings changed at any project change since the last check: a quick undo + redo (or
+  // Delete + undo) lands back on what the check saw, but sync / remove stopped its analysis on the way.
+  const seenKeys = useRef<Map<string, string> | null>(null);
+  const touched = useRef(new Set<string>());
   // Just loaded (no history): nothing was edited, so only note the settings.
   const loaded = studio.state.past.length === 0 && studio.state.future.length === 0;
   // Masks saved before a reload land a while after the project: check again then.
   const [restored, setRestored] = useState(0);
   useEffect(() => {
+    const now = subjectKeys(subjects, project.layers);
+    const seen = seenKeys.current;
+    if (seen) for (const [id, key] of now) if (seen.get(id) !== key) touched.current.add(id);
+    seenKeys.current = now;
     const t = setTimeout(() => {
-      const { keys, start } = autoAnalyses(subjects, project.layers, loaded ? null : autoKeys.current);
+      const prev = loaded ? null : autoKeys.current;
+      const { keys, start } = autoAnalyses(subjects, project.layers, prev, touched.current);
+      touched.current.clear();
       autoKeys.current = keys;
       start.forEach((l) => startAnalysis(subjects, l, setToast));
     }, 600);
