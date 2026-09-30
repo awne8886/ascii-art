@@ -155,18 +155,20 @@ void main() {
 `;
 
 /**
- * The canvas's subject mask, one placed layer at a time (blended over what's
- * there with SRC_ALPHA, ONE_MINUS_SRC_ALPHA): the layer's subject where it
- * shows, so a Normal-blended layer without one (or showing only its
- * background) covers the subjects below it. Layers in other blend modes
- * (Screen, Add, Multiply…) without a subject leave the mask as it is: what's
- * below still shows through them. Same placement maths as LAYER_FS.
+ * The canvas's subject mask, one placed layer at a time. A Normal-blended
+ * layer goes over what's there (SRC_ALPHA, ONE_MINUS_SRC_ALPHA): its subject
+ * where it shows, so without one (or showing only its background) it covers
+ * the subjects below it. Layers in other blend modes (Screen, Add, Multiply…)
+ * let what's below show through them: their subject only adds to the mask
+ * (blend equation MAX), and without one they're skipped. Same placement
+ * maths as LAYER_FS.
  */
 export const SUBJECT_MASK_FS = /* glsl */ `${HEAD}
 uniform sampler2D u_layer;
 uniform mat3 u_inv;
 uniform float u_opacity;
 uniform float u_subject;        // 1: the layer's subject counts, 0: it only covers
+uniform float u_through;        // 1: not blended Normal, so its subject only adds (under MAX)
 void main() {
   vec2 px = gl_FragCoord.xy;
   vec3 q = u_inv * vec3(px, 1.0);
@@ -178,7 +180,8 @@ void main() {
   vec2 edge = min(uv, 1.0 - uv) / max(fw, vec2(1e-6));
   float cov = q.z > 0.0 ? clamp(min(edge.x, edge.y) + 0.5, 0.0, 1.0) : 0.0;
   float s = u_subject > 0.5 ? subjectAt(clamp(uv, 0.0, 1.0)) : 0.0;
-  fragColor = vec4(s, 0.0, 0.0, L.a * u_opacity * cov);
+  float a = L.a * u_opacity * cov;
+  fragColor = u_through > 0.5 ? vec4(s * a, 0.0, 0.0, 1.0) : vec4(s, 0.0, 0.0, a);
 }
 `;
 

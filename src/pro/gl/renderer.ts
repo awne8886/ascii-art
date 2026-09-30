@@ -859,7 +859,10 @@ export class ProRenderer {
     return { fbo, tex, w, h };
   }
 
-  /** Fold one placed layer into the canvas's subject mask (its subject where it shows; elsewhere a Normal layer covers). */
+  /**
+   * Fold one placed layer into the canvas's subject mask: its subject where it shows; elsewhere a Normal
+   * layer covers, while one in another blend mode (`through`) lets the subjects below show.
+   */
   private canvasMaskPass(
     mask: Target,
     layerTex: WebGLTexture,
@@ -867,6 +870,7 @@ export class ProRenderer {
     opacity: number,
     subj: SubjectBind | null,
     counts: boolean,
+    through: boolean,
   ): void {
     const { gl } = this;
     const p = this.fixed('subject-mask', SUBJECT_MASK_FS);
@@ -877,10 +881,13 @@ export class ProRenderer {
     gl.uniformMatrix3fv(p.u.u_inv!, true, inv);
     this.f(p, 'u_opacity', opacity);
     this.f(p, 'u_subject', subj && counts ? 1 : 0);
+    this.f(p, 'u_through', through ? 1 : 0);
     gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    if (through) gl.blendEquation(gl.MAX);
+    else gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     this.draw();
     gl.disable(gl.BLEND);
+    if (through) gl.blendEquation(gl.FUNC_ADD);
   }
 
   // ─── Frame ───────────────────────────────────────────────────────────────
@@ -991,14 +998,14 @@ export class ProRenderer {
       [base, next] = [next, base];
 
       // A layer's subject counts where it shows; otherwise only a Normal layer hides what's below
-      // (Screen, Add, Multiply… let the subjects below show through).
+      // (Screen, Add, Multiply… let the subjects below show through, and only add their own).
       const counts = !!subj && set?.show !== 'background';
       if (wantMask && (mask || subj) && (counts || layer.blend === 0)) {
         if (!mask) {
           mask = this.canvasMask = this.maskTarget(this.canvasMask, W, H);
           this.clearTarget(mask);
         }
-        this.canvasMaskPass(mask, tex, inv, opacity, subj, counts);
+        this.canvasMaskPass(mask, tex, inv, opacity, subj, counts, layer.blend !== 0);
       }
     }
 
