@@ -6,8 +6,10 @@ import {
   type ExportOptions,
   type ExportProgress,
 } from '../export/exporter';
+import { layerMediaDuration } from '../frames';
 import { type MediaStore } from '../media';
 import { layerActive, type Layer, type Project } from '../model';
+import { analysisRange } from '../subject/masks';
 import { type SubjectStore } from '../subject/store';
 import { ColorRow } from './controls';
 import { Icon, type IconName } from './icons';
@@ -53,17 +55,40 @@ function mb(bytes: number): string {
 }
 
 /**
- * Layers in the export whose subject is switched on but has no masks to
- * draw yet (not analysed, still analysing, or failed): they export as if
- * separation were off, which is worth knowing before a long render.
+ * Layers in the export whose subject is switched on but has no masks that
+ * fit its settings: with none to draw yet (not analysed, still analysing, or
+ * failed) it exports as if separation were off; with masks made for older
+ * settings (analysing again, failed again, or out of date) it exports with
+ * those. Masks cover what shows on the canvas, so an export running past its
+ * end (`end`, in seconds) holds the last one there. All worth knowing before
+ * a long render.
  */
-function subjectWarnings(project: Project, subjects: SubjectStore, inExport: (l: Layer) => boolean): string[] {
+function subjectWarnings(
+  project: Project,
+  subjects: SubjectStore,
+  media: MediaStore,
+  inExport: (l: Layer) => boolean,
+  end: number,
+): string[] {
   const out: string[] = [];
+  const canvasEnd = project.canvas.duration;
   for (const l of project.layers) {
     if (!l.subject?.on || !inExport(l)) continue;
     const info = subjects.info(l);
-    if (info.status === 'running' && info.frames) {
-      out.push(`${l.name}: subject still being analysed again — it exports with the masks from before`);
+    const d = end > canvasEnd + 1e-3 ? layerMediaDuration(l, media) : null;
+    if (d && info.frames && analysisRange(l, d, end).to > info.to + 1e-3) {
+      out.push(
+        `${l.name}: subject analysed for the canvas’s ${Math.round(canvasEnd * 10) / 10} s — past that, its last mask holds (lengthen the canvas and analyse again to separate more)`,
+      );
+    }
+    if ((info.status === 'running' || info.status === 'error' || info.status === 'stale') && info.frames) {
+      const why =
+        info.status === 'running'
+          ? 'still being analysed again'
+          : info.status === 'error'
+            ? 'couldn’t be analysed again'
+            : 'settings changed since the last analysis';
+      out.push(`${l.name}: subject ${why} — it exports with the masks from before`);
     } else if (info.status === 'none' || info.status === 'running' || info.status === 'error') {
       const pct = info.status === 'running' ? ` (${Math.round((info.job?.progress ?? 0) * 100)}% analysed)` : '';
       out.push(`${l.name}: subject not separated yet${pct} — it exports without separation`);
@@ -109,8 +134,12 @@ export function ExportDialog({ project, media, subjects, time, onClose, onDone }
   );
 
   useSubjectsVersion(subjects);
-  const warnings = subjectWarnings(project, subjects, (l) =>
-    format === 'png' ? layerActive(l, time) : l.visible && l.start < duration && l.start + l.length > 0,
+  const warnings = subjectWarnings(
+    project,
+    subjects,
+    media,
+    (l) => (format === 'png' ? layerActive(l, time) : l.visible && l.start < duration && l.start + l.length > 0),
+    format === 'png' ? 0 : duration,
   );
 
   useEffect(() => () => abort.current?.abort(), []);

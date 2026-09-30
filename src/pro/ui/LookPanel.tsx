@@ -10,7 +10,7 @@ import {
   type ParamValue,
   type ParamValues,
 } from '../effects/types';
-import { newEffect, uid, type Appears, type EffectInstance, type Modulation } from '../model';
+import { newEffect, SEPARABLE_KINDS, uid, type Appears, type EffectInstance, type Modulation } from '../model';
 import { effectsOf, setEffects, updateEffect, type Studio } from '../store';
 import { loadLooks, lookName, saveLooks, type SavedLook } from '../storage';
 import { useEffectThumb, useStackThumb } from '../thumbs';
@@ -45,10 +45,9 @@ interface Props {
 export function LookPanel({ studio, owner, toast, onOpenSubject }: Props) {
   const stack = effectsOf(studio.project, owner);
   // Looks on the subject or the background need a separated subject: the layer's own, or (canvas) any layer's.
-  const separated =
-    owner === null
-      ? studio.project.layers.some((l) => l.subject?.on)
-      : !!studio.project.layers.find((l) => l.id === owner)?.subject?.on;
+  const ownerLayer = owner === null ? undefined : studio.project.layers.find((l) => l.id === owner);
+  const separable = !ownerLayer || SEPARABLE_KINDS.includes(ownerLayer.kind);
+  const separated = owner === null ? studio.project.layers.some((l) => l.subject?.on) : !!ownerLayer?.subject?.on;
   const [tab, setTab] = useState<'looks' | 'saved'>('looks');
   const [adding, setAdding] = useState(stack.length === 0);
   const [active, setActive] = useState<string | null>(stack.at(-1)?.uid ?? null);
@@ -161,6 +160,7 @@ export function LookPanel({ studio, owner, toast, onOpenSubject }: Props) {
           fx={current}
           onSave={saveCurrent}
           separated={separated}
+          separable={separable}
           onOpenSubject={onOpenSubject}
           key={current.uid}
         />
@@ -376,6 +376,7 @@ function Editor({
   fx,
   onSave,
   separated,
+  separable,
   onOpenSubject,
 }: {
   studio: Studio;
@@ -384,6 +385,8 @@ function Editor({
   onSave: () => void;
   /** A subject is separated for this stack to go by (appears in subject / background). */
   separated: boolean;
+  /** The owner can be separated at all (type and shapes can't; the canvas goes by its layers). */
+  separable: boolean;
   onOpenSubject?: () => void;
 }) {
   const def = effectById(fx.effectId);
@@ -506,7 +509,8 @@ function Editor({
           separated ? (
             owner === null && (
               <p className="muted small">
-                On the canvas, the subjects of every separated layer count; layers above cover the ones below.
+                On the canvas, the subjects of every separated layer count; layers above (blended Normal) cover the ones
+                below.
               </p>
             )
           ) : (
@@ -514,9 +518,11 @@ function Editor({
               <p className="muted small">
                 {owner === null
                   ? 'This needs a separated subject: switch it on in a layer’s Subject tab.'
-                  : 'This needs the layer’s subject separated from its background: switch it on in the Subject tab.'}
+                  : !separable
+                    ? 'Type and shapes have no background to separate. Put this look on the canvas instead: there it can appear on just the subjects (or the background) of separated videos, pictures or the webcam.'
+                    : 'This needs the layer’s subject separated from its background: switch it on in the Subject tab.'}
               </p>
-              {owner !== null && onOpenSubject && (
+              {owner !== null && separable && onOpenSubject && (
                 <button type="button" className="pbtn pbtn--small" onClick={onOpenSubject}>
                   <Icon name="subject" size={13} /> Subject
                 </button>

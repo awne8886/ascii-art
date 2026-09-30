@@ -80,11 +80,16 @@ export function maskIndex(
   return { i, j: k === 0 ? i : Math.min(n - 1, i + 1), k };
 }
 
-/** Media seconds of the layer's clip it plays (the same range tracking follows); 0–0 for a still. */
-export function analysisRange(layer: Layer, duration: number): { from: number; to: number } {
+/**
+ * Media seconds of the layer's clip that show on a canvas `canvasDuration`
+ * long (what it plays, cut where the canvas ends); 0–0 for a still.
+ */
+export function analysisRange(layer: Layer, duration: number, canvasDuration = Infinity): { from: number; to: number } {
   if (layer.kind === 'image' || !(duration > 0)) return { from: 0, to: 0 };
+  // Only the part of the layer on the canvas is ever previewed or exported.
+  const shown = Math.max(0, Math.min(layer.length, canvasDuration - layer.start));
   const from = Math.max(0, Math.min(layer.in, duration));
-  const to = Math.max(from, Math.min(duration, layer.in + layer.length * layer.speed));
+  const to = Math.max(from, Math.min(duration, layer.in + shown * layer.speed));
   return { from, to };
 }
 
@@ -303,8 +308,8 @@ export function trackSignature(track: Track | undefined): string {
   return `${Math.floor(track.data.length / 5)}:${(hash >>> 0).toString(36)}`;
 }
 
-/** What masks for the layer, analysed now with its current settings, would be for. */
-export function wantedMeta(layer: Layer, duration: number): MaskMeta {
+/** What masks for the layer, analysed now with its current settings (on a canvas that long), would be for. */
+export function wantedMeta(layer: Layer, duration: number, canvasDuration = Infinity): MaskMeta {
   const s = layer.subject ?? defaultSubject();
   return {
     media: layer.kind === 'sample' ? 'sample' : (layer.mediaId ?? ''),
@@ -313,7 +318,7 @@ export function wantedMeta(layer: Layer, duration: number): MaskMeta {
     area: s.area,
     rate: s.rate,
     track: s.area === 'tracked' ? trackSignature(layer.track) : '',
-    ...analysisRange(layer, duration),
+    ...analysisRange(layer, duration, canvasDuration),
   };
 }
 
@@ -334,10 +339,38 @@ export function sequenceFit(have: MaskMeta, want: MaskMeta): 'other-media' | 'st
 // ─── Storage ─────────────────────────────────────────────────────────────────
 
 /** Version of the IndexedDB record a sequence is saved as. */
-export const MASK_RECORD_VERSION = 1;
+export const MASK_RECORD_VERSION = 2;
 
+/** A sequence as it's saved: each mask's size and rectangle, and all their bytes in one Blob. */
 export function toRecord(seq: MaskSequence): Record<string, unknown> {
-  return { v: MASK_RECORD_VERSION, ...seq };
+  const { frames, ...rest } = seq;
+  return {
+    v: MASK_RECORD_VERSION,
+    ...rest,
+    frames: frames.map(({ width, height, rect }) => ({ width, height, rect })),
+    // One Blob: IndexedDB keeps it without structured-cloning hundreds of arrays on the main thread.
+    bytes: new Blob(frames.map((f) => f.data as Uint8Array<ArrayBuffer>)),
+  };
+}
+
+/**
+ * A saved record with its masks' bytes read back into its frames (the Blob
+ * is read off the main thread), ready for parseSequence; null if they don't
+ * add up.
+ */
+export async function readRecord(raw: unknown): Promise<unknown> {
+  const r = raw as { bytes?: unknown; frames?: unknown } | null;
+  if (!r || typeof r !== 'object' || !(r.bytes instanceof Blob) || !Array.isArray(r.frames)) return null;
+  const all = new Uint8Array(await r.bytes.arrayBuffer());
+  let at = 0;
+  const frames = (r.frames as Array<{ width?: unknown; height?: unknown } | null>).map((f) => {
+    const n = Number(f?.width) * Number(f?.height);
+    const size = Number.isInteger(n) && n > 0 ? n : 0;
+    const data = all.subarray(at, at + size);
+    at += size;
+    return { ...f, data };
+  });
+  return at === all.length ? { ...r, frames } : null;
 }
 
 const METHODS: readonly string[] = ['ai-fast', 'ai-hq', 'classic'] satisfies SegmentMethod[];

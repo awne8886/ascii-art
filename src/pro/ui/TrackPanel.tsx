@@ -6,7 +6,7 @@ import { type SubjectStore } from '../subject/store';
 import { analyzeTrack } from '../tracking/analyze';
 import { Group, Select, Switch } from './controls';
 import { Icon } from './icons';
-import { refreshSubject, withSubject } from './SubjectPanel';
+import { analysesItself, refreshSubject, withSubject } from './SubjectPanel';
 
 interface Props {
   studio: Studio;
@@ -158,7 +158,8 @@ export function TrackPanel({
               type="button"
               className="pbtn pbtn--block pbtn--ghost"
               onClick={() => {
-                if (layer.subject?.area === 'tracked') subjects.cancel(layer.id);
+                const wasCutOut = layer.subject?.area === 'tracked';
+                if (wasCutOut) subjects.cancel(layer.id);
                 studio.commit((p) => ({
                   ...p,
                   layers: p.layers.map((l) =>
@@ -167,7 +168,7 @@ export function TrackPanel({
                           ...l,
                           track: undefined,
                           effects: l.effects.map((e) => (e.appears === 5 ? { ...e, appears: 0 } : e)),
-                          // A cut-out of the object goes back to the whole frame (analysed again from the Subject tab).
+                          // A cut-out of the object goes back to the whole frame (analysed again below).
                           subject: l.subject?.area === 'tracked' ? { ...l.subject, area: 'frame' } : l.subject,
                         }
                       : l.follow?.layerId === layer.id
@@ -175,6 +176,13 @@ export function TrackPanel({
                         : l,
                   ),
                 }));
+                if (wasCutOut && layer.subject?.on) {
+                  // The cut-out now separates the whole frame: analyse it, as switching the area does.
+                  const next: Layer = { ...layer, track: undefined, subject: { ...layer.subject, area: 'frame' } };
+                  refreshSubject(subjects, next, toast);
+                  if (!analysesItself(next))
+                    toast('Separation is back on the whole frame: analyse it again in the Subject tab.');
+                }
               }}
             >
               <Icon name="trash" size={14} /> Clear the track
@@ -215,9 +223,12 @@ export function TrackPanel({
             className="rowbtn"
             title="Separate the object from everything around it, in its real shape, all through the clip"
             onClick={() => {
-              const next = withSubject(layer, { on: true, area: 'tracked' });
-              studio.commit(updateLayer(layer.id, { subject: next.subject }));
-              refreshSubject(subjects, next, toast);
+              // Once it's on, the row only leads back to the Subject tab (an analysis under way carries on).
+              if (!cutOut) {
+                const next = withSubject(layer, { on: true, area: 'tracked' });
+                studio.commit(updateLayer(layer.id, { subject: next.subject }));
+                refreshSubject(subjects, next, toast);
+              }
               onOpenSubject();
             }}
           >

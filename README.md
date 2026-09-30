@@ -61,14 +61,15 @@ classic view comes along as the first layer. **Classic** in the rail (or the log
   object**, and _Cut out the object_ separates it from everything around it, in its real shape.
 - **Subject & background** (the dock's _Subject_ tab): the subject of a video, the sample clip, a picture or the webcam
   is separated from its background, with the classic site's models (_AI · fast_, _AI · best_ on WebGPU, or _Classic_
-  with no download). Then pick a composition: the looks **on the subject** over the untouched video, the characters
-  **laid over** the subject so the video shows through them, the **subject only** (its background see-through, so the
-  layers below show), the looks on the background, or the background only; or set what shows, where the looks go, and
-  how they blend, yourself. Edges have a threshold, softness, grow / shrink and a steadier mode, and the background can
-  be dimmed, blurred or desaturated before the looks. Videos are analysed ahead of time (5 to 30 masks a second, blended
-  in between) over the part of the clip the layer plays, so the preview and the export both get a mask for every
-  frame; the webcam is separated live. With _Tracked object_, only the tracked object is separated, in a window that
-  follows it. Canvas looks can appear on the subjects of every layer, or on the background.
+  with no download). Then pick a composition: the looks **on the subject** over the untouched video, just the
+  **characters over the subject** (the looks' own dark background dropped, so the video shows between the glyphs), the
+  **subject only** (its background see-through, so the layers below show), the looks on the background, or the
+  background only; or set what shows, where the looks go, how they blend and whether their dark or light background
+  drops away, yourself. Edges have a threshold, softness, grow / shrink and a steadier mode, and the background can be
+  dimmed, blurred or desaturated before the looks. Videos are analysed ahead of time (5 to 30 masks a second, blended
+  in between) over the part of the clip that shows on the canvas, so the preview and the export both get a mask for
+  every frame; the webcam is separated live. With _Tracked object_, only the tracked object is separated, in a window
+  that follows it. Canvas looks can appear on the subjects of every layer, or on the background.
 - **Finish**: bloom, streaks and trails per layer or for the canvas; paper grain and a colour grade for the canvas.
 - **Canvas & timeline**: aspect presets or any size, length, frame rate, loop, background (see-through, light, dark,
   colour), a transport bar and an expandable timeline where clips can be moved and trimmed.
@@ -84,7 +85,7 @@ Under the hood (`src/pro/`): each look is one fragment shader (`effects/`) run b
 transform, then applies the canvas's looks and finish. The same renderer draws the preview and, off screen, the export
 (`export/exporter.ts`). A layer with its subject separated gets up to two more passes: its background is treated
 first (brightness, blur, saturation), and after its looks a matte pass keeps them to their part of the picture, over the
-untouched one, and cuts away what doesn't show. Its masks come from the classic site's segmentation worker, analysed
+untouched one (optionally keying out the looks' own background), and cuts away what doesn't show. Its masks come from the classic site's segmentation worker, analysed
 ahead of time (`subject/`) and kept in IndexedDB, outside the project.
 
 ## How it works

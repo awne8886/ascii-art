@@ -112,6 +112,9 @@ export function ProApp() {
   });
   useEffect(() => () => media.dispose(), [media]);
   useEffect(() => () => subjects.dispose(), [subjects]);
+  // Undo / redo can remove a layer, switch its subject off or restore other settings: analyses that no
+  // longer fit stop. Also keeps the store up with the canvas's length.
+  useEffect(() => subjects.sync(project), [project, subjects]);
 
   useEffect(() => {
     if (!toast) return;
@@ -748,7 +751,17 @@ export function ProApp() {
           }}
         />
       )}
-      {pop === 'layers' && <LayersPanel studio={studio} onClose={() => setPop(null)} />}
+      {pop === 'layers' && (
+        <LayersPanel
+          studio={studio}
+          onClose={() => setPop(null)}
+          onRemove={(id) => {
+            // Its masks stay (undo may bring the layer back), but an analysis under way stops.
+            subjects.cancel(id);
+            studio.commit(removeLayer(id));
+          }}
+        />
+      )}
 
       <main className="stage-pro">
         <Viewport

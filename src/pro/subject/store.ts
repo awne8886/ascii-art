@@ -10,6 +10,7 @@ import {
   finishKey,
   maskIndex,
   parseSequence,
+  readRecord,
   sequenceFit,
   toRecord,
   wantedMeta,
@@ -42,7 +43,12 @@ interface Held {
 interface Job {
   ctrl: AbortController;
   job: SubjectJob;
+  /** analysisKey() of the layer as it was analysed. */
+  key: string;
 }
+
+/** How an analysis ended. */
+export type AnalysisOutcome = 'done' | 'failed' | 'cancelled';
 
 interface Live {
   id: number;
@@ -74,8 +80,15 @@ export class SubjectStore implements MaskSource {
   private saved = new Set<string>();
   /** Layers already looked up in IndexedDB. */
   private tried = new Set<string>();
+  /** IndexedDB lookups under way, per layer (an analysis waits for one: it may bring back masks that fit). */
+  private loading = new Map<string, Promise<void>>();
+  /** The canvas's length: only the part of a clip on it is analysed. */
+  private canvasDuration = Infinity;
   private listeners = new Set<() => void>();
-  private ver = 0;
+  /** Bumped when anything maskAt can return changes (MaskSource.version). */
+  private maskVer = 0;
+  /** Bumped on every change subscribers hear of (masks, analysis progress, errors…). */
+  private rev = 0;
   private ids = 0;
   /** Bumped by clear(), so loads and analyses started before it are dropped. */
   private gen = 0;
@@ -87,8 +100,14 @@ export class SubjectStore implements MaskSource {
     this.watchPrunes();
   }
 
+  /** Changes only with the masks (the paused preview redraws), not with analysis progress. */
   get version(): number {
-    return this.ver;
+    return this.maskVer;
+  }
+
+  /** Changes with everything subscribers are told about: the panels' snapshot. */
+  get revision(): number {
+    return this.rev;
   }
 
   subscribe(fn: () => void): () => void {
@@ -96,11 +115,13 @@ export class SubjectStore implements MaskSource {
     return () => this.listeners.delete(fn);
   }
 
-  private emit(): void {
+  /** Tell subscribers; `masks` when what maskAt returns changed too. */
+  private emit(masks = false): void {
     if (this.emitTimer) clearTimeout(this.emitTimer);
     this.emitTimer = null;
     this.lastEmit = performance.now();
-    this.ver++;
+    if (masks) this.maskVer++;
+    this.rev++;
     this.listeners.forEach((fn) => fn());
   }
 
@@ -132,7 +153,7 @@ export class SubjectStore implements MaskSource {
     const duration = this.durationOf(layer);
     let out = none;
     if (held && duration !== null) {
-      const fit = sequenceFit(held.seq.meta, wantedMeta(layer, duration));
+      const fit = sequenceFit(held.seq.meta, wantedMeta(layer, duration, this.canvasDuration));
       if (fit !== 'other-media') {
         const { seq } = held;
         out = {
@@ -152,18 +173,33 @@ export class SubjectStore implements MaskSource {
     return error && error.key === this.analysisKey(layer) ? { ...out, status: 'error', error: error.message } : out;
   }
 
-  async analyze(layer: Layer): Promise<void> {
+  async analyze(layer: Layer): Promise<AnalysisOutcome> {
     this.cancel(layer.id);
-    if (layer.kind === 'webcam' || !SEPARABLE_KINDS.includes(layer.kind)) return;
+    if (layer.kind === 'webcam' || !SEPARABLE_KINDS.includes(layer.kind)) return 'cancelled';
     const gen = this.gen;
-    const entry: Job = { ctrl: new AbortController(), job: { phase: 'analyse', progress: 0 } };
+    const entry: Job = {
+      ctrl: new AbortController(),
+      job: { phase: 'analyse', progress: 0 },
+      key: this.analysisKey(layer),
+    };
     this.jobs.set(layer.id, entry);
     this.errors.delete(layer.id);
     this.emit();
     const current = () => this.jobs.get(layer.id) === entry && gen === this.gen;
     try {
+      // Saved masks on their way back from IndexedDB may already fit: then there's nothing to do.
+      const pending = this.loading.get(layer.id);
+      if (pending) {
+        await pending;
+        if (!current()) return 'cancelled';
+        const held = this.held.get(layer.id);
+        const d = this.durationOf(layer);
+        if (held && d !== null && sequenceFit(held.seq.meta, wantedMeta(layer, d, this.canvasDuration)) === 'current')
+          return 'done';
+      }
       const seq = await analyzeSubject(
         layer,
+        this.canvasDuration,
         this.media,
         (job) => {
           if (!current()) return;
@@ -172,11 +208,13 @@ export class SubjectStore implements MaskSource {
         },
         entry.ctrl.signal,
       );
-      if (current()) this.install(layer.id, seq, true);
+      if (!current()) return 'cancelled';
+      this.install(layer.id, seq, true);
+      return 'done';
     } catch (e) {
-      if (current() && !isAbort(e) && !entry.ctrl.signal.aborted) {
-        this.errors.set(layer.id, { message: message(e), key: this.analysisKey(layer) });
-      }
+      if (!current() || isAbort(e) || entry.ctrl.signal.aborted) return 'cancelled';
+      this.errors.set(layer.id, { message: message(e), key: this.analysisKey(layer) });
+      return 'failed';
     } finally {
       if (this.jobs.get(layer.id) === entry) {
         this.jobs.delete(layer.id);
@@ -191,6 +229,22 @@ export class SubjectStore implements MaskSource {
     job.ctrl.abort();
     this.jobs.delete(layerId);
     this.emit();
+  }
+
+  /**
+   * Keep up with the project after every change: analyses it no longer wants
+   * stop (undo / redo can remove a layer, switch its subject off or restore
+   * other settings), and what's wanted follows the canvas's length.
+   */
+  sync(project: Project): void {
+    for (const [id, j] of this.jobs) {
+      const l = project.layers.find((x) => x.id === id);
+      if (!l?.subject?.on || this.analysisKey(l) !== j.key) this.cancel(id);
+    }
+    if (project.canvas.duration !== this.canvasDuration) {
+      this.canvasDuration = project.canvas.duration;
+      this.emit();
+    }
   }
 
   copy(fromLayerId: string, to: Layer): void {
@@ -210,7 +264,7 @@ export class SubjectStore implements MaskSource {
 
   clear(): void {
     this.reset();
-    this.emit();
+    this.emit(true);
   }
 
   /** Stops everything; the store still works if used again (StrictMode disposes it once and carries on in development). */
@@ -237,6 +291,7 @@ export class SubjectStore implements MaskSource {
     this.last.clear();
     this.saved.clear();
     this.tried.clear();
+    this.loading.clear();
   }
 
   /** Hear which saved masks get pruned (so they're saved again if their layer comes back). */
@@ -251,15 +306,26 @@ export class SubjectStore implements MaskSource {
     this.tried.add(layerId);
     this.saved.add(layerId);
     if (persist) void saveMasks(layerId, toRecord(seq));
-    this.emit();
+    this.emit(true);
   }
 
-  /** Bring back a layer's saved masks, if they were made for its media and nothing newer is held. */
-  private async load(layer: Layer, gen: number): Promise<void> {
+  /** Bring back a layer's saved masks (see loadNow), noting the lookup while it's under way. */
+  private load(layer: Layer, gen: number): Promise<void> {
+    const p: Promise<void> = this.loadNow(layer, gen).finally(() => {
+      if (this.loading.get(layer.id) === p) this.loading.delete(layer.id);
+    });
+    this.loading.set(layer.id, p);
+    return p;
+  }
+
+  /** Bring back a layer's saved masks, if they were made for its media and nothing newer is held. Never rejects. */
+  private async loadNow(layer: Layer, gen: number): Promise<void> {
     this.tried.add(layer.id);
     const raw = await loadMasks(layer.id);
     if (raw === undefined || gen !== this.gen || this.held.has(layer.id)) return;
-    const seq = parseSequence(raw);
+    const rec = await readRecord(raw).catch(() => null);
+    if (gen !== this.gen || this.held.has(layer.id)) return;
+    const seq = parseSequence(rec);
     if (!seq) {
       void deleteMasks(layer.id);
       return;
@@ -347,10 +413,16 @@ export class SubjectStore implements MaskSource {
       live = undefined;
     }
     if (!live) {
+      let said = '';
       const sub = new LiveSubject(layer.id, m.el, s.method, (what) => {
-        // A new mask changes what maskAt returns; an error changes what the panel says.
-        if (what === 'error') this.emit();
-        else this.ver++;
+        // A new mask changes what maskAt returns (the Viewport polls the version); the first mask,
+        // a new backend or an error changes what the panel says, so tell subscribers then.
+        if (what === 'mask') this.maskVer++;
+        const now = `${sub.latest ? 1 : 0}|${sub.backend}|${sub.error ?? ''}`;
+        if (what === 'error' || now !== said) {
+          said = now;
+          this.emit();
+        }
       });
       live = { id: ++this.ids, sub, mediaId: m.id, wanted: 0 };
       this.live.set(layer.id, live);

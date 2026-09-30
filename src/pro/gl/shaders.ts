@@ -121,14 +121,23 @@ void main() {
  * A separated layer's composition: its looks only in their part (combined
  * with the untouched picture like a look with its base: blend mode, then
  * strength), and only the part of the layer that shows keeps its alpha.
+ * With a key, the looks' own dark (or light) background drops away in their
+ * part, so only their marks (characters, dots, lines) sit on the picture.
  */
 export const SUBJECT_MATTE_FS = /* glsl */ `${HEAD}${MIX_PREMUL}
 uniform sampler2D u_img;        // the untouched picture (background treated)
 uniform sampler2D u_fx;         // the layer's looks over it
 uniform float u_looksPart;      // 0 all, 1 subject, 2 background
 uniform float u_looksBlend;
+uniform float u_looksKey;       // 0 off, 1 drop dark, 2 drop light
 uniform float u_looksMix;       // 0 when the layer has no looks
 uniform float u_showPart;       // 0 all, 1 subject, 2 background
+// The key's soft edges. Dark, on the looks' brightest channel: black and near-black cells (up to about
+// #181818) drop, while the ASCII look's glyphs stay solid even where the picture is dim (on the sample
+// clip, 99% of glyph pixels are above 0.19). Light, on 1 - the darkest channel: white and cream paper
+// (#f5ecd7 is 0.16 from white) drop, ink stays.
+const vec2 KEY_DARK = vec2(0.08, 0.22);
+const vec2 KEY_LIGHT = vec2(0.2, 0.45);
 void main() {
   vec2 uv = gl_FragCoord.xy / u_res;
   vec4 base = texture(u_img, uv);
@@ -137,7 +146,10 @@ void main() {
   vec3 blended = blendRGB(base.rgb, fx.rgb, int(u_looksBlend + 0.5));
   // Over a transparent base the looks' own colour shows as-is.
   blended = mix(fx.rgb, blended, base.a);
-  vec4 c = mixPremul(base, vec4(blended, fx.a), partOf(u_looksPart, m) * u_looksMix);
+  float key = 1.0;
+  if (u_looksKey > 1.5) key = smoothstep(KEY_LIGHT.x, KEY_LIGHT.y, 1.0 - min(fx.r, min(fx.g, fx.b)));
+  else if (u_looksKey > 0.5) key = smoothstep(KEY_DARK.x, KEY_DARK.y, max(fx.r, max(fx.g, fx.b)));
+  vec4 c = mixPremul(base, vec4(blended, fx.a), partOf(u_looksPart, m) * u_looksMix * key);
   fragColor = vec4(c.rgb, c.a * partOf(u_showPart, m));
 }
 `;
@@ -145,8 +157,10 @@ void main() {
 /**
  * The canvas's subject mask, one placed layer at a time (blended over what's
  * there with SRC_ALPHA, ONE_MINUS_SRC_ALPHA): the layer's subject where it
- * shows, so a layer without one (or showing only its background) covers the
- * subjects below it. Same placement maths as LAYER_FS.
+ * shows, so a Normal-blended layer without one (or showing only its
+ * background) covers the subjects below it. Layers in other blend modes
+ * (Screen, Add, Multiply…) without a subject leave the mask as it is: what's
+ * below still shows through them. Same placement maths as LAYER_FS.
  */
 export const SUBJECT_MASK_FS = /* glsl */ `${HEAD}
 uniform sampler2D u_layer;

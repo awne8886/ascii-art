@@ -11,6 +11,7 @@ import {
   type Layer,
   type LayerFinish,
   type Project,
+  type SubjectKey,
   type SubjectPart,
   type SubjectSettings,
 } from '../model';
@@ -158,6 +159,7 @@ type TrackBox = [number, number, number, number];
 const NO_TRACK: TrackBox = [0, 0, 0, 0];
 
 const PARTS: Record<SubjectPart, number> = { all: 0, subject: 1, background: 2 };
+const KEYS: Record<SubjectKey, number> = { off: 0, dark: 1, light: 2 };
 const WHOLE: [number, number, number, number] = [0, 0, 1, 1];
 
 /** The layer's tracked object at time t (centre x, y, width, height in its uv), for "appears in: tracked object". */
@@ -833,6 +835,7 @@ export class ProRenderer {
     this.bindSubject(p, subj);
     this.f(p, 'u_looksPart', PARTS[set.looks] ?? 0);
     this.f(p, 'u_looksBlend', set.looksBlend);
+    this.f(p, 'u_looksKey', KEYS[set.looksKey] ?? 0);
     // No looks: nothing to lay over the picture (a Screen of the picture over itself would brighten it).
     this.f(p, 'u_looksMix', hasLooks ? Math.max(0, Math.min(1, set.looksMix)) : 0);
     this.f(p, 'u_showPart', PARTS[set.show] ?? 0);
@@ -856,7 +859,7 @@ export class ProRenderer {
     return { fbo, tex, w, h };
   }
 
-  /** Fold one placed layer into the canvas's subject mask (its subject where it shows; elsewhere it covers). */
+  /** Fold one placed layer into the canvas's subject mask (its subject where it shows; elsewhere a Normal layer covers). */
   private canvasMaskPass(
     mask: Target,
     layerTex: WebGLTexture,
@@ -987,12 +990,15 @@ export class ProRenderer {
       this.draw();
       [base, next] = [next, base];
 
-      if (wantMask && (mask || subj)) {
+      // A layer's subject counts where it shows; otherwise only a Normal layer hides what's below
+      // (Screen, Add, Multiply… let the subjects below show through).
+      const counts = !!subj && set?.show !== 'background';
+      if (wantMask && (mask || subj) && (counts || layer.blend === 0)) {
         if (!mask) {
           mask = this.canvasMask = this.maskTarget(this.canvasMask, W, H);
           this.clearTarget(mask);
         }
-        this.canvasMaskPass(mask, tex, inv, opacity, subj, set?.show !== 'background');
+        this.canvasMaskPass(mask, tex, inv, opacity, subj, counts);
       }
     }
 

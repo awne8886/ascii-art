@@ -1,7 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { effectById } from '../effects/registry';
 import { type ShapeType } from '../model';
-import { moveLayer, removeLayer, updateLayer, type Studio } from '../store';
+import { moveLayer, updateLayer, type Studio } from '../store';
 import { Icon, type IconName } from './icons';
 
 /** A panel that drops out of the left rail and closes on outside clicks / Esc. */
@@ -97,7 +97,16 @@ export function AddPanel({ onClose, add }: { onClose: () => void; add: AddAction
   );
 }
 
-export function LayersPanel({ studio, onClose }: { studio: Studio; onClose: () => void }) {
+export function LayersPanel({
+  studio,
+  onClose,
+  onRemove,
+}: {
+  studio: Studio;
+  onClose: () => void;
+  /** Deletes a layer (the studio's way, which also stops its subject analysis). */
+  onRemove: (id: string) => void;
+}) {
   const p = studio.project;
   const layers = [...p.layers].reverse();
   return (
@@ -183,7 +192,7 @@ export function LayersPanel({ studio, onClose }: { studio: Studio; onClose: () =
               <button
                 type="button"
                 className="iconbtn"
-                onClick={() => studio.commit(removeLayer(l.id))}
+                onClick={() => onRemove(l.id)}
                 aria-label="Delete layer"
                 title="Delete"
               >

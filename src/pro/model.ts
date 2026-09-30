@@ -41,6 +41,9 @@ export interface Track {
 /** Part of a layer's picture once its subject is separated from the background. */
 export type SubjectPart = 'all' | 'subject' | 'background';
 
+/** Which background of the looks is dropped, so only their marks sit on the picture. */
+export type SubjectKey = 'off' | 'dark' | 'light';
+
 /**
  * Subject / background separation of a layer's picture (videos, the sample
  * clip, pictures, the webcam). Masks are analysed ahead of time (every
@@ -56,8 +59,14 @@ export interface SubjectSettings {
   show: SubjectPart;
   /** Where the layer's looks go; elsewhere the untouched picture shows. */
   looks: SubjectPart;
-  /** How the looks sit on the untouched picture in their area (index into BLEND_MODES; Screen lays light characters over the video). */
+  /** How the looks sit on the untouched picture in their area (index into BLEND_MODES). */
   looksBlend: BlendMode;
+  /**
+   * Drop the looks' own background in their area, so only their marks (characters, dots, lines) sit on
+   * the picture: 'dark' keys out dark backgrounds (most type looks), 'light' keys out light ones
+   * (paper-like looks).
+   */
+  looksKey: SubjectKey;
   /** How much of the looks shows in their area, 0–1. */
   looksMix: number;
   /** Where subject turns into background, 0–1. */
@@ -91,6 +100,7 @@ export function defaultSubject(): SubjectSettings {
     show: 'all',
     looks: 'subject',
     looksBlend: 0,
+    looksKey: 'off',
     looksMix: 1,
     threshold: 0.5,
     softness: 0.15,

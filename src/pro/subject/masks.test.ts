@@ -16,6 +16,7 @@ import {
   maskIndex,
   maskPlan,
   parseSequence,
+  readRecord,
   sequenceFit,
   toRecord,
   trackSignature,
@@ -76,6 +77,20 @@ describe('analysisRange / analysisTimes', () => {
     expect(analysisRange(l, 10)).toEqual({ from: 1, to: 7 });
     expect(analysisRange(l, 5)).toEqual({ from: 1, to: 5 });
     expect(analysisRange(newLayer('image', 'i'), 0)).toEqual({ from: 0, to: 0 });
+  });
+
+  it('stops where the canvas ends', () => {
+    // The starter: a 12 s sample layer on a 6 s canvas.
+    const sample = newLayer('sample', 's', { length: 12 });
+    expect(analysisRange(sample, 12, 6)).toEqual({ from: 0, to: 6 });
+    expect(analysisTimes(0, 6, 10, 12)).toHaveLength(61);
+    // Starting later leaves less of it on the canvas; at twice the speed that's twice the media.
+    expect(analysisRange(newLayer('video', 'v', { start: 2, length: 10, in: 1, speed: 2 }), 30, 6)).toEqual({
+      from: 1,
+      to: 9,
+    });
+    // Starting after the canvas ends: one mask's worth.
+    expect(analysisRange(newLayer('video', 'v', { start: 8, length: 4 }), 30, 6)).toEqual({ from: 0, to: 0 });
   });
 
   it('samples every 1/rate s, kept inside the clip', () => {
@@ -331,6 +346,13 @@ describe('staleness', () => {
     expect(sequenceFit(have, wantedMeta(video({ in: 0.5 }), 10))).toBe('stale');
   });
 
+  it('only wants the part on the canvas', () => {
+    const onCanvas = wantedMeta(video(), 10, 2);
+    expect(sequenceFit(onCanvas, wantedMeta(video(), 10, 2))).toBe('current');
+    expect(sequenceFit(onCanvas, wantedMeta(video(), 10, 1))).toBe('current');
+    expect(sequenceFit(onCanvas, wantedMeta(video(), 10))).toBe('stale');
+  });
+
   it('tells other media apart', () => {
     const have = wantedMeta(video(), 10);
     expect(sequenceFit(have, wantedMeta(video({ mediaId: 'm2' }), 10))).toBe('other-media');
@@ -363,17 +385,31 @@ describe('parseSequence', () => {
     ms: 1234,
   };
 
-  it('round-trips a record', () => {
-    expect(parseSequence(structuredClone(toRecord(seq)))).toEqual(seq);
+  it('round-trips a record, its bytes in one Blob', async () => {
+    const rec = toRecord(seq);
+    expect(rec.bytes).toBeInstanceOf(Blob);
+    expect((rec.bytes as Blob).size).toBe(16);
+    expect((rec.frames as object[])[0]).toEqual({ width: 4, height: 2, rect: [0, 0, 1, 1] });
+    expect(parseSequence(await readRecord(structuredClone(rec)))).toEqual(seq);
   });
 
-  it('rejects what it cannot use', () => {
+  it('rejects what it cannot use', async () => {
+    const rec = (await readRecord(toRecord(seq))) as Record<string, unknown>;
     expect(parseSequence(null)).toBeNull();
-    expect(parseSequence({ ...toRecord(seq), v: 99 })).toBeNull();
-    expect(parseSequence({ ...toRecord(seq), frames: [] })).toBeNull();
-    expect(parseSequence({ ...toRecord(seq), meta: { ...seq.meta, method: 'magic' } })).toBeNull();
+    expect(parseSequence({ ...rec, v: 99 })).toBeNull();
+    expect(parseSequence({ ...rec, v: 1 })).toBeNull();
+    expect(parseSequence({ ...rec, frames: [] })).toBeNull();
+    expect(parseSequence({ ...rec, meta: { ...seq.meta, method: 'magic' } })).toBeNull();
     const short = { ...seq.frames[0]!, data: new Uint8Array(3) };
-    expect(parseSequence({ ...toRecord(seq), frames: [short] })).toBeNull();
-    expect(parseSequence({ ...toRecord(seq), frames: [{ ...seq.frames[0]!, rect: [0, 0, 1] }] })).toBeNull();
+    expect(parseSequence({ ...rec, frames: [short] })).toBeNull();
+    expect(parseSequence({ ...rec, frames: [{ ...seq.frames[0]!, rect: [0, 0, 1] }] })).toBeNull();
+  });
+
+  it("won't read back bytes that don't add up, or an older record", async () => {
+    const rec = toRecord(seq);
+    expect(await readRecord({ ...rec, bytes: new Blob([new Uint8Array(15)]) })).toBeNull();
+    expect(await readRecord({ ...rec, bytes: new Blob([new Uint8Array(17)]) })).toBeNull();
+    expect(await readRecord({ ...seq, v: 1 })).toBeNull();
+    expect(await readRecord(null)).toBeNull();
   });
 });

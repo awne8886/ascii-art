@@ -194,14 +194,20 @@ async function handle(req: SegmentRequest): Promise<void> {
   }
 }
 
-// One request at a time: onnxruntime can't run two inferences on a session at once. Within a lane only
-// the newest request matters, so older ones still waiting in the queue are dropped; requests without a
-// lane (a clip analysed frame by frame) all run, in order.
+// Model requests one at a time: onnxruntime can't run two inferences on a session at once. Within a lane
+// only the newest request matters, so older ones still waiting in the queue are dropped; requests without
+// a lane (a clip analysed frame by frame) all run, in order.
 let queue = Promise.resolve();
 const lanes = new Lanes();
 self.onmessage = (e: MessageEvent<SegmentRequest>) => {
   const req = e.data;
   lanes.arrive(req.lane, req.id);
+  // Classic needs no model: it never waits behind a download, a session start or an inference
+  // (its path in handle() is synchronous, so it runs to completion right here).
+  if (req.method === 'classic') {
+    void handle(req);
+    return;
+  }
   queue = queue.then(() =>
     lanes.superseded(req.lane, req.id) ? post({ type: 'error', id: req.id, message: SUPERSEDED }) : handle(req),
   );

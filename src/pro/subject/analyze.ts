@@ -19,10 +19,11 @@ import { type SubjectJob } from './types';
 
 /**
  * Separates a layer's subject ahead of time: one mask every 1/rate s over
- * the part of the clip the layer plays (one for a picture), each frame run
- * through the segmentation worker (which refines the model's coarse mask
- * with a colour-guided filter). With the tracked area, only a window around
- * the layer's tracked object is segmented, so the subject is that object.
+ * the part of the clip that shows on the canvas (one for a picture), each
+ * frame run through the segmentation worker (which refines the model's
+ * coarse mask with a colour-guided filter). With the tracked area, only a
+ * window around the layer's tracked object is segmented, so the subject is
+ * that object.
  */
 
 /** Model input (long side) for a whole frame: U²-Net works at 320 px; BiRefNet at 1024, fed a fair 768. */
@@ -48,11 +49,13 @@ function withHint(msg: string): string {
 }
 
 /**
- * Analyse the layer's subject with its current settings. Rejects with an
+ * Analyse the layer's subject with its current settings, over the part of
+ * its clip that shows on a canvas `canvasDuration` long. Rejects with an
  * AbortError when `signal` aborts, and with a readable Error otherwise.
  */
 export async function analyzeSubject(
   layer: Layer,
+  canvasDuration: number,
   media: MediaStore,
   onProgress: (job: SubjectJob) => void,
   signal: AbortSignal,
@@ -78,7 +81,7 @@ export async function analyzeSubject(
   const [pw, ph] = m ? [m.width, m.height] : SAMPLE_SIZE;
   const still = layer.kind === 'image';
   const duration = layer.kind === 'sample' ? SAMPLE_DURATION : still ? 0 : m!.duration;
-  const meta = wantedMeta(layer, duration);
+  const meta = wantedMeta(layer, duration, canvasDuration);
   const times = still ? [0] : analysisTimes(meta.from, meta.to, s.rate, duration);
   const count = times.length;
   const plan = maskPlan(count, pw, ph, tracked);
@@ -94,7 +97,8 @@ export async function analyzeSubject(
     return { phase: 'analyse', progress: base + (1 - base) * (done / count), done, count };
   };
   const onSegment = (p: SegmentProgress) => {
-    if (done > 0 || signal.aborted) return;
+    // Classic has no model: download / start-up progress is another job's (the worker is shared).
+    if (done > 0 || signal.aborted || s.method === 'classic') return;
     if (p.phase === 'download') {
       downloaded = true;
       const f = p.total ? Math.min(1, (p.loaded ?? 0) / p.total) : 0;

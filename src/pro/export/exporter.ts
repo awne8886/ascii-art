@@ -252,7 +252,7 @@ export async function exportProject(
 
     const subframes = opts.motionBlur === 0 ? 1 : opts.motionBlur === 1 ? 4 : 8;
     const shutter = opts.motionBlur === 2 ? 1 : 0.5;
-    const renderAt = (frames: Map<string, LayerFrame | null>, t: number, index: number) => {
+    const renderAt = (frames: Map<string, LayerFrame | null>, t: number, index: number, pictureT = t) => {
       for (let s = 0; s < subframes; s++) {
         const ts = t + (subframes > 1 ? (s / subframes) * (shutter / fps) : 0);
         renderer.renderFrame({
@@ -264,8 +264,8 @@ export async function exportProject(
           frameOf: (l) => frames.get(l.id) ?? null,
           sound: (l) => soundLevel(project, l, ts, media),
           background: bg,
-          // At t, like the pictures: the sub-frames move the layers, not what the frames show.
-          maskOf: (l) => subjects?.maskAt(l, project, t) ?? null,
+          // At the pictures' time: the sub-frames and the preroll move the layers, not what the frames show.
+          maskOf: (l) => subjects?.maskAt(l, project, pictureT) ?? null,
         });
         if (subframes > 1) renderer.accumulate(s);
       }
@@ -282,7 +282,7 @@ export async function exportProject(
     if (single) {
       const t = times[0]!;
       const frames = await frameOf(0, t);
-      for (let j = preroll; j > 0; j--) renderAt(frames, t - j / fps, -j);
+      for (let j = preroll; j > 0; j--) renderAt(frames, t - j / fps, -j, t);
       renderAt(frames, t, Math.round(t * fps));
       const blob = await new Promise<Blob>((resolve, reject) =>
         canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG encoding failed.'))), 'image/png'),
@@ -298,7 +298,7 @@ export async function exportProject(
         aborted(signal);
         const t = times[i]!;
         const frames = await frameOf(i, t);
-        if (i === 0) for (let j = preroll; j > 0; j--) renderAt(frames, t - j / fps, -j);
+        if (i === 0) for (let j = preroll; j > 0; j--) renderAt(frames, t - j / fps, -j, t);
         renderAt(frames, t, i);
         const blob = await new Promise<Blob>((resolve, reject) =>
           canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('PNG encoding failed.'))), 'image/png'),
@@ -361,7 +361,7 @@ export async function exportProject(
         aborted(signal);
         const t = times[i]!;
         const frames = await frameOf(i, t);
-        if (i === 0) for (let j = preroll; j > 0; j--) renderAt(frames, t - j / fps, -j);
+        if (i === 0) for (let j = preroll; j > 0; j--) renderAt(frames, t - j / fps, -j, t);
         renderAt(frames, t, i);
         await videoSrc.add(i / fps, 1 / fps);
         onProgress({ phase: 'render', done: i + 1, total, eta: eta(i + 1) });
@@ -386,7 +386,7 @@ async function recordRealtime(
   total: number,
   times: number[],
   frameOf: (i: number, t: number) => Promise<Map<string, LayerFrame | null>>,
-  renderAt: (frames: Map<string, LayerFrame | null>, t: number, index: number) => void,
+  renderAt: (frames: Map<string, LayerFrame | null>, t: number, index: number, pictureT?: number) => void,
   onProgress: (p: ExportProgress) => void,
   signal: AbortSignal,
   base: string,

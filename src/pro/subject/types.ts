@@ -34,7 +34,10 @@ export interface LayerMask {
 
 /** Where the renderer gets subject masks from. */
 export interface MaskSource {
-  /** Bumped whenever any mask, or anything that changes how one is drawn, changes (the paused preview redraws). */
+  /**
+   * Bumped whenever any mask, or anything that changes how one is drawn, changes (the paused preview
+   * redraws); only then: an analysis making progress doesn't change what maskAt returns.
+   */
   readonly version: number;
   /**
    * The layer's subject at timeline time t, or null when it has none to show:
