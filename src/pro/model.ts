@@ -1,3 +1,4 @@
+import { type SegmentMethod } from '../settings';
 import { effectById } from './effects/registry';
 import { defaultParams, presetParams, type ParamValues } from './effects/types';
 
@@ -13,8 +14,11 @@ import { defaultParams, presetParams, type ParamValues } from './effects/types';
 /** Index into BLEND_MODES. */
 export type BlendMode = number;
 
-/** Where an effect shows: 0 everywhere, 1 brights, 2 darks, 3 centre, 4 edges, 5 the tracked object. */
-export type Appears = 0 | 1 | 2 | 3 | 4 | 5;
+/**
+ * Where an effect shows: 0 everywhere, 1 brights, 2 darks, 3 centre, 4 edges, 5 the tracked object,
+ * 6 the subject, 7 the background (6 and 7 need the layer's subject separated; on the canvas, any layer's).
+ */
+export type Appears = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 /**
  * An object followed through a layer's video. Positions are in the layer's
@@ -32,6 +36,72 @@ export interface Track {
   fps: number;
   /** Per sample: centre x, centre y, width, height, confidence (0–1). Empty until tracked. */
   data: number[];
+}
+
+/** Part of a layer's picture once its subject is separated from the background. */
+export type SubjectPart = 'all' | 'subject' | 'background';
+
+/**
+ * Subject / background separation of a layer's picture (videos, the sample
+ * clip, pictures, the webcam). Masks are analysed ahead of time (every
+ * `rate`-th of a second of the clip; live for the webcam) and live outside
+ * the project (see `subject/`); these are the settings.
+ */
+export interface SubjectSettings {
+  on: boolean;
+  method: SegmentMethod;
+  /** Separate across the whole frame, or only the layer's tracked object (segmented in a window around it). */
+  area: 'frame' | 'tracked';
+  /** What of the layer shows: everything, only the subject (background see-through), or only the background. */
+  show: SubjectPart;
+  /** Where the layer's looks go; elsewhere the untouched picture shows. */
+  looks: SubjectPart;
+  /** How the looks sit on the untouched picture in their area (index into BLEND_MODES; Screen lays light characters over the video). */
+  looksBlend: BlendMode;
+  /** How much of the looks shows in their area, 0–1. */
+  looksMix: number;
+  /** Where subject turns into background, 0–1. */
+  threshold: number;
+  /** Edge softness, 0–1. */
+  softness: number;
+  /** Grow (+) or shrink (−) the subject, in % of the picture's longer side (−5…5). */
+  expand: number;
+  /** Swap subject and background. */
+  invert: boolean;
+  /** Blend each mask with its neighbours in time: steadier edges, less flicker. */
+  steady: boolean;
+  /** The background before the looks: brightness (1 as is, 0–2), blur (0–1), saturation (1 as is, 0–2). */
+  bgBrightness: number;
+  bgBlur: number;
+  bgSaturation: number;
+  /** Masks analysed per second of media (videos and the sample clip); in between, neighbouring masks blend. */
+  rate: number;
+}
+
+/** Layer kinds whose picture can be separated into subject and background. */
+export const SEPARABLE_KINDS: readonly LayerKind[] = ['video', 'sample', 'image', 'webcam'];
+
+export const SUBJECT_RATES = [5, 10, 15, 30] as const;
+
+export function defaultSubject(): SubjectSettings {
+  return {
+    on: false,
+    method: 'ai-fast',
+    area: 'frame',
+    show: 'all',
+    looks: 'subject',
+    looksBlend: 0,
+    looksMix: 1,
+    threshold: 0.5,
+    softness: 0.15,
+    expand: 0,
+    invert: false,
+    steady: true,
+    bgBrightness: 1,
+    bgBlur: 0,
+    bgSaturation: 1,
+    rate: 10,
+  };
 }
 
 /** A layer riding along with another layer's tracked object. */
@@ -221,6 +291,7 @@ export interface Layer {
   finish: LayerFinish;
   track?: Track;
   follow?: Follow;
+  subject?: SubjectSettings;
 }
 
 export type Background = 'transparent' | 'light' | 'dark' | 'color';
