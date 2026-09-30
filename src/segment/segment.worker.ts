@@ -9,9 +9,10 @@
  */
 import type * as Ort from 'onnxruntime-web/webgpu';
 import { classicSaliency } from './classic';
+import { Lanes } from './lanes';
 import { MODELS, modelUrl, type ModelId } from './models';
 import { guidedFilter, resizeBilinear } from './refine';
-import type { SegmentRequest, SegmentResponse } from './protocol';
+import { SUPERSEDED, type SegmentRequest, type SegmentResponse } from './protocol';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -193,14 +194,15 @@ async function handle(req: SegmentRequest): Promise<void> {
   }
 }
 
-// One request at a time: onnxruntime can't run two inferences on a session at once. Only the newest
-// request matters to the page, so older ones still waiting in the queue are dropped.
+// One request at a time: onnxruntime can't run two inferences on a session at once. Within a lane only
+// the newest request matters, so older ones still waiting in the queue are dropped; requests without a
+// lane (a clip analysed frame by frame) all run, in order.
 let queue = Promise.resolve();
-let newest = 0;
+const lanes = new Lanes();
 self.onmessage = (e: MessageEvent<SegmentRequest>) => {
   const req = e.data;
-  newest = Math.max(newest, req.id);
+  lanes.arrive(req.lane, req.id);
   queue = queue.then(() =>
-    req.id < newest ? post({ type: 'error', id: req.id, message: 'Superseded by a newer request.' }) : handle(req),
+    lanes.superseded(req.lane, req.id) ? post({ type: 'error', id: req.id, message: SUPERSEDED }) : handle(req),
   );
 };

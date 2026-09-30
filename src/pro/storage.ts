@@ -4,6 +4,7 @@ import { type MediaStore } from './media';
 import {
   defaultCanvasFinish,
   defaultLayerFinish,
+  defaultSubject,
   newLayer,
   newProject,
   upgradeEffect,
@@ -13,31 +14,45 @@ import {
 } from './model';
 
 /**
- * Autosave: the project as JSON in localStorage, the files its layers use in
- * IndexedDB (they can be large). Everything stays on this device.
+ * Autosave: the project as JSON in localStorage, the files its layers use and
+ * their analysed subject masks in IndexedDB (they can be large). Everything
+ * stays on this device.
  */
 
 const PROJECT_KEY = 'ascii-art:pro:project:v1';
 const LOOKS_KEY = 'ascii-art:pro:looks:v1';
 const DB = 'ascii-art-pro';
-const STORE = 'media';
+/** Files by media id. */
+const MEDIA = 'media';
+/** Analysed subject masks by layer id (version 2 of the database added them). */
+const MASKS = 'masks';
+const DB_VERSION = 2;
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') return reject(new Error('no IndexedDB'));
-    const req = indexedDB.open(DB, 1);
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+    const req = indexedDB.open(DB, DB_VERSION);
+    // Create whichever stores are missing, so upgrading keeps the files already saved.
+    req.onupgradeneeded = () => {
+      for (const name of [MEDIA, MASKS]) {
+        if (!req.result.objectStoreNames.contains(name)) req.result.createObjectStore(name);
+      }
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('IndexedDB failed'));
   });
 }
 
-async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+async function tx<T>(
+  mode: IDBTransactionMode,
+  fn: (s: IDBObjectStore) => IDBRequest<T>,
+  store: typeof MEDIA | typeof MASKS = MEDIA,
+): Promise<T> {
   const db = await openDb();
   try {
     return await new Promise<T>((resolve, reject) => {
-      const t = db.transaction(STORE, mode);
-      const req = fn(t.objectStore(STORE));
+      const t = db.transaction(store, mode);
+      const req = fn(t.objectStore(store));
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error ?? new Error('IndexedDB request failed'));
     });
@@ -68,12 +83,64 @@ async function pruneMedia(keep: Set<string>): Promise<void> {
   }
 }
 
+// ─── Subject masks ───────────────────────────────────────────────────────────
+
+/** A layer's analysed masks (the record is subject/masks.ts's to write and to validate). */
+export async function saveMasks(layerId: string, record: unknown): Promise<void> {
+  try {
+    await tx('readwrite', (s) => s.put(record, layerId), MASKS);
+  } catch {
+    // Storage full or blocked: the masks just need analysing again after a reload.
+  }
+}
+
+/** A layer's saved masks record, or undefined (none, or storage unavailable). */
+export async function loadMasks(layerId: string): Promise<unknown> {
+  try {
+    return await tx<unknown>('readonly', (s) => s.get(layerId), MASKS);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function deleteMasks(layerId: string): Promise<void> {
+  try {
+    await tx('readwrite', (s) => s.delete(layerId), MASKS);
+  } catch {
+    // Already gone, or storage unavailable.
+  }
+}
+
+const pruneListeners = new Set<(layerIds: string[]) => void>();
+
+/**
+ * Hear which layers' saved masks were pruned (their layers had left the
+ * project), so masks still held in memory for them can be saved again if
+ * undo brings the layer back.
+ */
+export function onMasksPruned(fn: (layerIds: string[]) => void): () => void {
+  pruneListeners.add(fn);
+  return () => pruneListeners.delete(fn);
+}
+
+async function pruneMasks(keep: Set<string>): Promise<void> {
+  try {
+    const keys = (await tx('readonly', (s) => s.getAllKeys(), MASKS)) as string[];
+    const gone = keys.filter((k) => !keep.has(k));
+    for (const k of gone) await tx('readwrite', (s) => s.delete(k), MASKS);
+    if (gone.length) pruneListeners.forEach((fn) => fn(gone));
+  } catch {
+    // Nothing to prune.
+  }
+}
+
 export function saveProject(p: Project): void {
   try {
     // Webcams can't come back without asking again: leave them out.
     const saved: Project = { ...p, layers: p.layers.filter((l) => l.kind !== 'webcam') };
     localStorage.setItem(PROJECT_KEY, JSON.stringify(saved));
     void pruneMedia(new Set(saved.layers.map((l) => l.mediaId).filter((id): id is string => !!id)));
+    void pruneMasks(new Set(saved.layers.map((l) => l.id)));
   } catch {
     // Private mode or full storage.
   }
@@ -86,6 +153,7 @@ export function clearSavedProject(): void {
     // Fine.
   }
   void pruneMedia(new Set());
+  void pruneMasks(new Set());
 }
 
 function sanitizeEffects(list: unknown): EffectInstance[] {
@@ -124,6 +192,8 @@ export async function loadProject(media: MediaStore): Promise<Project | null> {
         effects: sanitizeEffects(l.effects),
         finish: { ...defaultLayerFinish(), ...l.finish },
         motion: Array.isArray(l.motion) ? l.motion : [],
+        // Settings added since the project was saved get their defaults.
+        ...(l.subject ? { subject: { ...defaultSubject(), ...l.subject } } : {}),
       });
     }
     return {

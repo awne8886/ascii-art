@@ -49,7 +49,7 @@ classic view comes along as the first layer. **Classic** in the rail (or the log
   Sort, Glitch…), Analog (Film Prism, Wave Lines), Experimental (Holo, Stardust, Ember Veil…) and Tracking & interface
   (Brand Generator). The classic site's rippling colour ASCII is the _ASCII_ look.
 - **Stacks of looks** per layer and for the whole canvas, each with blend mode, strength and where it appears (brights,
-  darks, centre, edges). Any number setting can **loop** between two values (◇) or **follow the sound** (♪) of the
+  darks, centre, edges, the tracked object, the subject or the background). Any number setting can **loop** between two values (◇) or **follow the sound** (♪) of the
   video layers. Save stacks to _Saved looks_ and reuse them.
 - **Layers**: pictures, videos, webcam, type, shapes (circle, square, sphere, star, blob…) and the animated sample clip,
   with placement handles, fit, opacity, blend modes, 3D tilt, and **motion** presets (drift, orbit, spin, bounce,
@@ -57,8 +57,18 @@ classic view comes along as the first layer. **Classic** in the rail (or the log
 - **Object tracking** (the dock's _Track_ tab): draw a box around something in a video or the sample clip and it is
   followed through the whole clip (a template tracker with normalized cross-correlation, run frame by frame in the
   browser, forwards and backwards from where you drew it). Other layers can **follow** it (optionally growing and
-  shrinking with it), _Label that follows_ adds a tag that rides along, and any look can appear only on the **tracked
-  object**.
+  shrinking with it), _Label that follows_ adds a tag that rides along, any look can appear only on the **tracked
+  object**, and _Cut out the object_ separates it from everything around it, in its real shape.
+- **Subject & background** (the dock's _Subject_ tab): the subject of a video, the sample clip, a picture or the webcam
+  is separated from its background, with the classic site's models (_AI · fast_, _AI · best_ on WebGPU, or _Classic_
+  with no download). Then pick a composition: the looks **on the subject** over the untouched video, the characters
+  **laid over** the subject so the video shows through them, the **subject only** (its background see-through, so the
+  layers below show), the looks on the background, or the background only; or set what shows, where the looks go, and
+  how they blend, yourself. Edges have a threshold, softness, grow / shrink and a steadier mode, and the background can
+  be dimmed, blurred or desaturated before the looks. Videos are analysed ahead of time (5 to 30 masks a second, blended
+  in between) over the part of the clip the layer plays, so the preview and the export both get a mask for every
+  frame; the webcam is separated live. With _Tracked object_, only the tracked object is separated, in a window that
+  follows it. Canvas looks can appear on the subjects of every layer, or on the background.
 - **Finish**: bloom, streaks and trails per layer or for the canvas; paper grain and a colour grade for the canvas.
 - **Canvas & timeline**: aspect presets or any size, length, frame rate, loop, background (see-through, light, dark,
   colour), a transport bar and an expandable timeline where clips can be moved and trimmed.
@@ -72,7 +82,10 @@ classic view comes along as the first layer. **Classic** in the rail (or the log
 Under the hood (`src/pro/`): each look is one fragment shader (`effects/`) run by a WebGL2 compositor
 (`gl/renderer.ts`) that renders each layer's looks at the size it covers on screen, places it with a projective
 transform, then applies the canvas's looks and finish. The same renderer draws the preview and, off screen, the export
-(`export/exporter.ts`).
+(`export/exporter.ts`). A layer with its subject separated gets up to two more passes: its background is treated
+first (brightness, blur, saturation), and after its looks a matte pass keeps them to their part of the picture, over the
+untouched one, and cuts away what doesn't show. Its masks come from the classic site's segmentation worker, analysed
+ahead of time (`subject/`) and kept in IndexedDB, outside the project.
 
 ## How it works
 

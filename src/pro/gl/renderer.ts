@@ -11,7 +11,10 @@ import {
   type Layer,
   type LayerFinish,
   type Project,
+  type SubjectPart,
+  type SubjectSettings,
 } from '../model';
+import { type LayerMask, type MaskFrame } from '../subject/types';
 import { buildAtlas } from './atlas';
 import {
   ACCUM_FS,
@@ -25,6 +28,9 @@ import {
   LAYER_FS,
   OUTPUT_FS,
   STREAK_FS,
+  SUBJECT_MASK_FS,
+  SUBJECT_MATTE_FS,
+  SUBJECT_PREP_FS,
   UP_FS,
 } from './shaders';
 
@@ -36,6 +42,12 @@ import {
  * streaks, trails), then is placed onto the canvas with its projective
  * transform, opacity and blend mode. The canvas then gets its own looks,
  * finish, grade and paper, and goes to the screen.
+ *
+ * A layer whose subject is separated (`maskOf`) also gets its background
+ * treated before the looks (prep), and its looks confined to their part of
+ * the picture after them (matte); every look sees the mask, for "appears in:
+ * subject / background". Canvas looks that appear on the subject read a
+ * canvas-wide mask gathered from every placed layer.
  */
 
 export interface LayerFrame {
@@ -62,6 +74,8 @@ export interface RenderInput {
   background?: [number, number, number, number] | null;
   /** Skip layers' and effects' feedback history (thumbnails). */
   still?: boolean;
+  /** A layer's separated subject at this time (asked only of layers with separation on); null for none. */
+  maskOf?: (layer: Layer) => LayerMask | null;
 }
 
 interface Target {
@@ -72,6 +86,24 @@ interface Target {
 }
 
 type Uniforms = Record<string, WebGLUniformLocation | null>;
+
+/** A subject mask on the GPU (R8), and which MaskFrame it holds. */
+interface MaskTex {
+  tex: WebGLTexture;
+  version: string;
+  w: number;
+  h: number;
+}
+
+/** What a pass needs to sample a subject: the u_subj* uniforms. */
+interface SubjectBind {
+  a: WebGLTexture;
+  b: WebGLTexture;
+  rectA: [number, number, number, number];
+  rectB: [number, number, number, number];
+  mix: number;
+  outside: number;
+}
 
 interface Program {
   prog: WebGLProgram;
@@ -91,6 +123,11 @@ interface Owner {
   gradeOut: Target | null;
   srcTex: WebGLTexture | null;
   srcVersion: string | number | null;
+  /** Subject masks: the pair drawn last (a, b), each uploaded once per version. */
+  subj: [MaskTex | null, MaskTex | null];
+  /** Background treatment and subject matte outputs, sized like the layer buffer. */
+  prepOut: Target | null;
+  matteOut: Target | null;
   used: boolean;
 }
 
@@ -119,6 +156,9 @@ export function backgroundColor(project: Project): [number, number, number, numb
 
 type TrackBox = [number, number, number, number];
 const NO_TRACK: TrackBox = [0, 0, 0, 0];
+
+const PARTS: Record<SubjectPart, number> = { all: 0, subject: 1, background: 2 };
+const WHOLE: [number, number, number, number] = [0, 0, 1, 1];
 
 /** The layer's tracked object at time t (centre x, y, width, height in its uv), for "appears in: tracked object". */
 function trackBox(layer: Layer, t: number): TrackBox {
@@ -153,6 +193,8 @@ export class ProRenderer {
   private lost = false;
   /** The last frame rendered (before it went to the screen). */
   private last: Target | null = null;
+  /** The canvas's subject mask (R8), while a canvas look appears on the subject or background. */
+  private canvasMask: Target | null = null;
 
   constructor(
     readonly canvas: HTMLCanvasElement | OffscreenCanvas,
@@ -290,6 +332,9 @@ export class ProRenderer {
         gradeOut: null,
         srcTex: null,
         srcVersion: null,
+        subj: [null, null],
+        prepOut: null,
+        matteOut: null,
         used: true,
       };
       this.owners.set(id, o);
@@ -308,7 +353,18 @@ export class ProRenderer {
     this.free(o.glowOut);
     this.free(o.gradeOut);
     if (o.srcTex) this.gl.deleteTexture(o.srcTex);
+    this.dropSubject(o);
     this.owners.delete(id);
+  }
+
+  /** Free an owner's subject resources (separation switched off, or the owner gone). */
+  private dropSubject(o: Owner): void {
+    o.subj.forEach((m) => m && this.gl.deleteTexture(m.tex));
+    o.subj = [null, null];
+    this.free(o.prepOut);
+    this.free(o.matteOut);
+    o.prepOut = null;
+    o.matteOut = null;
   }
 
   private atlasFor(def: EffectDef, params: ParamValues): AtlasEntry | null {
@@ -349,6 +405,52 @@ export class ProRenderer {
       // A video without a decoded frame yet, a tainted image…: skip this frame.
       return false;
     }
+  }
+
+  /** `slot` holding mask frame f, uploading its bytes only when it holds another version. Null for a malformed frame. */
+  private maskSlot(slot: MaskTex | null, f: MaskFrame): MaskTex | null {
+    if (slot && slot.version === f.version) return slot;
+    const w = Math.round(f.width);
+    const h = Math.round(f.height);
+    if (w < 1 || h < 1 || f.data.length < w * h) return null;
+    const { gl } = this;
+    const tex = slot?.tex ?? this.texture(false);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    // One byte per texel: rows are as long as the mask is wide, not padded to 4.
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (slot && slot.w === w && slot.h === h)
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RED, gl.UNSIGNED_BYTE, f.data);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, f.data);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    return { tex, version: f.version, w, h };
+  }
+
+  /**
+   * The layer's subject on the GPU, ready to bind. Uploads happen here, before
+   * any pass binds its textures (creating or binding one clobbers the active unit).
+   */
+  private subjectFor(o: Owner, m: LayerMask): SubjectBind | null {
+    // A video stepping forward: the frame it blended towards is the one it now blends from.
+    if (o.subj[0]?.version !== m.a.version && o.subj[1]?.version === m.a.version) o.subj = [o.subj[1], o.subj[0]];
+    const a = (o.subj[0] = this.maskSlot(o.subj[0], m.a) ?? o.subj[0]);
+    if (!a || a.version !== m.a.version) return null;
+    let b = a;
+    if (m.b.version !== m.a.version) {
+      const nb = (o.subj[1] = this.maskSlot(o.subj[1], m.b) ?? o.subj[1]);
+      if (!nb || nb.version !== m.b.version) return null;
+      b = nb;
+    }
+    const mix = m.b.version === m.a.version ? 0 : Math.max(0, Math.min(1, m.mix));
+    return {
+      a: a.tex,
+      b: b.tex,
+      rectA: m.a.rect,
+      rectB: b === a ? m.a.rect : m.b.rect,
+      mix,
+      outside: Math.max(0, Math.min(1, m.outside)),
+    };
   }
 
   private chain(w: number, h: number): GlowChain {
@@ -416,6 +518,18 @@ export class ProRenderer {
     this.gl.drawArrays(this.gl.TRIANGLES, 0, 3);
   }
 
+  /** The u_subj* uniforms (units 3 and 4), or u_subjOn = 0 with blanks bound so no stale texture is sampled. */
+  private bindSubject(p: Program, s: SubjectBind | null | undefined): void {
+    this.tex(p, 'u_subjA', 3, s?.a ?? null);
+    this.tex(p, 'u_subjB', 4, s?.b ?? null);
+    this.f(p, 'u_subjOn', s ? 1 : 0);
+    if (!s) return;
+    this.f(p, 'u_subjRectA', ...s.rectA);
+    this.f(p, 'u_subjRectB', ...s.rectB);
+    this.f(p, 'u_subjMix', s.mix);
+    this.f(p, 'u_subjOutside', s.outside);
+  }
+
   /** Build the target's mip chain (and sample it with mipmaps from now on). */
   private mip(t: Target): void {
     const { gl } = this;
@@ -441,7 +555,7 @@ export class ProRenderer {
     input: WebGLTexture,
     out: Target,
     prev: Target | null,
-    ctx: { time: number; duration: number; frame: number; unit: number; track?: TrackBox },
+    ctx: { time: number; duration: number; frame: number; unit: number; track?: TrackBox; subj?: SubjectBind | null },
   ): boolean {
     const p = this.effectProgram(def);
     if (!p) return false;
@@ -453,6 +567,7 @@ export class ProRenderer {
     this.tex(p, 'u_src', 0, input);
     this.tex(p, 'u_prev', 1, prev?.tex ?? null);
     this.tex(p, 'u_atlas', 2, atlas?.tex ?? null);
+    this.bindSubject(p, ctx.subj);
     this.f(p, 'u_atlasGrid', atlas?.cols ?? 1, atlas?.rows ?? 1);
     this.f(p, 'u_glyphCount', atlas?.count ?? 0);
     this.f(p, 'u_atlasCellPx', atlas?.cellH ?? 64);
@@ -498,6 +613,7 @@ export class ProRenderer {
       sound: number;
       still: boolean;
       track?: TrackBox;
+      subj?: SubjectBind | null;
     },
   ): { tex: WebGLTexture; target: Target | null } {
     let cur = input;
@@ -668,6 +784,102 @@ export class ProRenderer {
     return out;
   }
 
+  /** The layer's background treated (brightness, blur, saturation) before its looks; null when it's left as is. */
+  private subjectPrep(
+    owner: Owner,
+    input: WebGLTexture,
+    w: number,
+    h: number,
+    set: SubjectSettings,
+    subj: SubjectBind,
+  ): Target | null {
+    if (set.bgBrightness === 1 && set.bgBlur <= 0 && set.bgSaturation === 1) {
+      this.free(owner.prepOut);
+      owner.prepOut = null;
+      return null;
+    }
+    const out = (owner.prepOut = this.sized(owner.prepOut, w, h));
+    const p = this.fixed('subject-prep', SUBJECT_PREP_FS);
+    this.bindTarget(out, w, h);
+    this.use(p, w, h);
+    this.tex(p, 'u_img', 0, input);
+    this.bindSubject(p, subj);
+    this.f(p, 'u_bgBrightness', set.bgBrightness);
+    this.f(p, 'u_bgSaturation', set.bgSaturation);
+    this.f(p, 'u_bgBlur', Math.max(0, Math.min(1, set.bgBlur)));
+    this.draw();
+    // Looks sample their input's mips.
+    this.mip(out);
+    return out;
+  }
+
+  /** The looks only in their part of the picture, and only the part that shows. */
+  private subjectMatte(
+    owner: Owner,
+    picture: WebGLTexture,
+    looks: WebGLTexture,
+    hasLooks: boolean,
+    w: number,
+    h: number,
+    set: SubjectSettings,
+    subj: SubjectBind,
+  ): Target {
+    const out = (owner.matteOut = this.sized(owner.matteOut, w, h));
+    const p = this.fixed('subject-matte', SUBJECT_MATTE_FS);
+    this.bindTarget(out, w, h);
+    this.use(p, w, h);
+    this.tex(p, 'u_img', 0, picture);
+    this.tex(p, 'u_fx', 1, looks);
+    this.bindSubject(p, subj);
+    this.f(p, 'u_looksPart', PARTS[set.looks] ?? 0);
+    this.f(p, 'u_looksBlend', set.looksBlend);
+    // No looks: nothing to lay over the picture (a Screen of the picture over itself would brighten it).
+    this.f(p, 'u_looksMix', hasLooks ? Math.max(0, Math.min(1, set.looksMix)) : 0);
+    this.f(p, 'u_showPart', PARTS[set.show] ?? 0);
+    this.draw();
+    // Placement samples it with textureGrad.
+    this.mip(out);
+    return out;
+  }
+
+  /** A single-channel W×H target for the canvas's subject mask. */
+  private maskTarget(t: Target | null, w: number, h: number): Target {
+    if (t && t.w === w && t.h === h) return t;
+    this.free(t);
+    const { gl } = this;
+    const tex = this.texture(false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+    const fbo = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { fbo, tex, w, h };
+  }
+
+  /** Fold one placed layer into the canvas's subject mask (its subject where it shows; elsewhere it covers). */
+  private canvasMaskPass(
+    mask: Target,
+    layerTex: WebGLTexture,
+    inv: Mat3,
+    opacity: number,
+    subj: SubjectBind | null,
+    counts: boolean,
+  ): void {
+    const { gl } = this;
+    const p = this.fixed('subject-mask', SUBJECT_MASK_FS);
+    this.bindTarget(mask, mask.w, mask.h);
+    this.use(p, mask.w, mask.h);
+    this.tex(p, 'u_layer', 0, layerTex);
+    this.bindSubject(p, subj);
+    gl.uniformMatrix3fv(p.u.u_inv!, true, inv);
+    this.f(p, 'u_opacity', opacity);
+    this.f(p, 'u_subject', subj && counts ? 1 : 0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    this.draw();
+    gl.disable(gl.BLEND);
+  }
+
   // ─── Frame ───────────────────────────────────────────────────────────────
 
   /** Size of the buffer a layer's looks run at: what it covers on screen, capped. */
@@ -715,6 +927,15 @@ export class ProRenderer {
       }
     }
     const sizeOf = (l: Layer) => this.sizes.get(l.id) ?? null;
+    // Canvas looks on the subject or background need a canvas-wide subject mask, started at the first
+    // layer that has one (layers below it have nothing to cover).
+    const wantMask =
+      !still && project.effects.some((e) => e.enabled && e.strength > 0 && (e.appears === 6 || e.appears === 7));
+    if (!wantMask && this.canvasMask) {
+      this.free(this.canvasMask);
+      this.canvasMask = null;
+    }
+    let mask: Target | null = null;
     for (const layer of project.layers) {
       const frame = frames.get(layer.id);
       if (!frame) continue;
@@ -729,6 +950,10 @@ export class ProRenderer {
       if (opacity <= 0) continue;
       const [bw, bh] = this.bufferSize(size[0], size[1], k, layer.scale);
       const sound = input.sound?.(layer) ?? 0;
+      const set = layer.subject?.on ? layer.subject : null;
+      if (!set && (owner.subj[0] || owner.prepOut || owner.matteOut)) this.dropSubject(owner);
+      const lm = set ? (input.maskOf?.(layer) ?? null) : null;
+      const subj = lm ? this.subjectFor(owner, lm) : null;
       const fxCtx = {
         time: input.time,
         duration: canvas.duration,
@@ -737,8 +962,15 @@ export class ProRenderer {
         sound,
         still,
         track: trackBox(layer, input.time),
+        subj,
       };
-      let tex = this.runEffects(owner, owner.srcTex, bw, bh, layer.effects, fxCtx).tex;
+      let tex: WebGLTexture;
+      if (set && subj) {
+        // Background treatment → looks (which see the mask) → only the parts that show, looks where they go.
+        const picture = this.subjectPrep(owner, owner.srcTex, bw, bh, set, subj)?.tex ?? owner.srcTex;
+        const looks = this.runEffects(owner, picture, bw, bh, layer.effects, fxCtx);
+        tex = this.subjectMatte(owner, picture, looks.tex, !!looks.target, bw, bh, set, subj).tex;
+      } else tex = this.runEffects(owner, owner.srcTex, bw, bh, layer.effects, fxCtx).tex;
       const glowed = this.glow(owner, tex, bw, bh, layer.finish, still);
       if (glowed) tex = glowed.tex;
 
@@ -754,6 +986,14 @@ export class ProRenderer {
       this.f(layerProg, 'u_blend', layer.blend);
       this.draw();
       [base, next] = [next, base];
+
+      if (wantMask && (mask || subj)) {
+        if (!mask) {
+          mask = this.canvasMask = this.maskTarget(this.canvasMask, W, H);
+          this.clearTarget(mask);
+        }
+        this.canvasMaskPass(mask, tex, inv, opacity, subj, set?.show !== 'background');
+      }
     }
 
     // The whole canvas: looks, finish, grade & paper.
@@ -770,6 +1010,7 @@ export class ProRenderer {
         unit: k,
         sound,
         still,
+        subj: mask && { a: mask.tex, b: mask.tex, rectA: WHOLE, rectB: WHOLE, mix: 0, outside: 0 },
       });
       if (r.target) out = r.target;
     }
@@ -872,6 +1113,7 @@ export class ProRenderer {
     this.comp.forEach((t) => this.free(t));
     this.thumbComp.forEach((t) => this.free(t));
     this.acc.forEach((t) => this.free(t));
+    this.free(this.canvasMask);
     this.chains.forEach((c) => {
       c.bloom.forEach((t) => this.free(t));
       c.streak.forEach((t) => this.free(t));

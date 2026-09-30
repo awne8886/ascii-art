@@ -19,24 +19,36 @@ import { Icon } from './icons';
 
 const CAT_LABEL = new Map(CATEGORIES.map((c) => [c.id, c.label]));
 
-const APPEARS: ReadonlyArray<{ value: Appears; label: string }> = [
-  { value: 0, label: 'Whole layer' },
+/** Where a look shows; `short` fits the Mask group's four columns. */
+const APPEARS: ReadonlyArray<{ value: Appears; label: string; short?: string }> = [
+  { value: 0, label: 'Whole layer', short: 'All' },
   { value: 1, label: 'Brights' },
   { value: 2, label: 'Darks' },
   { value: 3, label: 'Centre' },
   { value: 4, label: 'Edges' },
-  { value: 5, label: 'Tracked object' },
+  { value: 5, label: 'Tracked object', short: 'Object' },
+  { value: 6, label: 'Subject' },
+  { value: 7, label: 'Background' },
 ];
+
+const APPEARS_SEG = APPEARS.map((a) => ({ value: a.value, label: a.short ?? a.label, title: a.label }));
 
 interface Props {
   studio: Studio;
   /** Layer id, or null for the whole canvas. */
   owner: string | null;
   toast: (msg: string) => void;
+  /** Opens the layer's Subject tab (looks that appear on the subject or the background need it). */
+  onOpenSubject?: () => void;
 }
 
-export function LookPanel({ studio, owner, toast }: Props) {
+export function LookPanel({ studio, owner, toast, onOpenSubject }: Props) {
   const stack = effectsOf(studio.project, owner);
+  // Looks on the subject or the background need a separated subject: the layer's own, or (canvas) any layer's.
+  const separated =
+    owner === null
+      ? studio.project.layers.some((l) => l.subject?.on)
+      : !!studio.project.layers.find((l) => l.id === owner)?.subject?.on;
   const [tab, setTab] = useState<'looks' | 'saved'>('looks');
   const [adding, setAdding] = useState(stack.length === 0);
   const [active, setActive] = useState<string | null>(stack.at(-1)?.uid ?? null);
@@ -143,7 +155,15 @@ export function LookPanel({ studio, owner, toast }: Props) {
       {showLibrary && <Library onApply={apply} onCancel={stack.length ? () => setAdding(false) : undefined} />}
 
       {tab === 'looks' && !showLibrary && current && (
-        <Editor studio={studio} owner={owner} fx={current} onSave={saveCurrent} key={current.uid} />
+        <Editor
+          studio={studio}
+          owner={owner}
+          fx={current}
+          onSave={saveCurrent}
+          separated={separated}
+          onOpenSubject={onOpenSubject}
+          key={current.uid}
+        />
       )}
     </div>
   );
@@ -355,11 +375,16 @@ function Editor({
   owner,
   fx,
   onSave,
+  separated,
+  onOpenSubject,
 }: {
   studio: Studio;
   owner: string | null;
   fx: EffectInstance;
   onSave: () => void;
+  /** A subject is separated for this stack to go by (appears in subject / background). */
+  separated: boolean;
+  onOpenSubject?: () => void;
 }) {
   const def = effectById(fx.effectId);
   const set = (patch: Partial<EffectInstance>, coalesce?: string) =>
@@ -474,14 +499,39 @@ function Editor({
         defaultOpen={fx.appears !== 0}
         summary={APPEARS.find((a) => a.value === fx.appears)?.label}
       >
-        <Segmented value={fx.appears} cols={3} options={APPEARS} onChange={(v) => set({ appears: v })} />
-        <Slider
-          label="Softness"
-          value={fx.appearsSoft}
-          min={0}
-          max={0.5}
-          onChange={(v) => set({ appearsSoft: v }, `soft:${fx.uid}`)}
-        />
+        <div className="maskseg">
+          <Segmented value={fx.appears} cols={4} options={APPEARS_SEG} onChange={(v) => set({ appears: v })} />
+        </div>
+        {fx.appears >= 6 ? (
+          separated ? (
+            owner === null && (
+              <p className="muted small">
+                On the canvas, the subjects of every separated layer count; layers above cover the ones below.
+              </p>
+            )
+          ) : (
+            <div className="subjnote">
+              <p className="muted small">
+                {owner === null
+                  ? 'This needs a separated subject: switch it on in a layer’s Subject tab.'
+                  : 'This needs the layer’s subject separated from its background: switch it on in the Subject tab.'}
+              </p>
+              {owner !== null && onOpenSubject && (
+                <button type="button" className="pbtn pbtn--small" onClick={onOpenSubject}>
+                  <Icon name="subject" size={13} /> Subject
+                </button>
+              )}
+            </div>
+          )
+        ) : (
+          <Slider
+            label="Softness"
+            value={fx.appearsSoft}
+            min={0}
+            max={0.5}
+            onChange={(v) => set({ appearsSoft: v }, `soft:${fx.uid}`)}
+          />
+        )}
         <Switch label="Invert" checked={fx.appearsInvert} onChange={(v) => set({ appearsInvert: v })} />
       </Group>
 

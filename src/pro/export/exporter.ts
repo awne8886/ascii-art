@@ -5,6 +5,7 @@ import { ProRenderer, backgroundColor, hexToRgb01, type LayerFrame } from '../gl
 import { type MediaStore } from '../media';
 import { layerActive, mediaTime, type Layer, type Project } from '../model';
 import { SAMPLE_SIZE } from '../sources';
+import { type MaskSource } from '../subject/types';
 import { mixAudio } from './audio';
 import { ZipWriter } from './zip';
 
@@ -176,6 +177,8 @@ export async function exportProject(
   opts: ExportOptions,
   onProgress: (p: ExportProgress) => void,
   signal: AbortSignal,
+  /** Separated subjects (masks are analysed ahead of time, so every frame gets its own). */
+  subjects?: MaskSource,
 ): Promise<ExportResult> {
   const video = opts.format === 'mp4' || opts.format === 'webm';
   const W = video ? even(opts.width) : Math.max(1, Math.round(opts.width));
@@ -261,6 +264,8 @@ export async function exportProject(
           frameOf: (l) => frames.get(l.id) ?? null,
           sound: (l) => soundLevel(project, l, ts, media),
           background: bg,
+          // At t, like the pictures: the sub-frames move the layers, not what the frames show.
+          maskOf: (l) => subjects?.maskAt(l, project, t) ?? null,
         });
         if (subframes > 1) renderer.accumulate(s);
       }

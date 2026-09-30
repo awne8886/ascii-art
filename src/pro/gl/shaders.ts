@@ -59,6 +59,115 @@ void main() {
 }
 `;
 
+/** Mix of two straight-alpha colours, done premultiplied so a see-through one adds no colour. */
+const MIX_PREMUL = /* glsl */ `
+vec4 mixPremul(vec4 a, vec4 b, float t) {
+  vec4 p = mix(vec4(a.rgb * a.a, a.a), vec4(b.rgb * b.a, b.a), t);
+  return vec4(p.rgb / max(p.a, 1e-5), p.a);
+}
+/** Share of a picture in a part: 0 all, 1 the subject (m), 2 the background. */
+float partOf(float part, float m) { return part < 0.5 ? 1.0 : part < 1.5 ? m : 1.0 - m; }
+`;
+
+/**
+ * A layer's background before its looks: brightness, saturation and a blur
+ * (a golden-angle disc of taps at the mip level matching their spacing,
+ * weighted towards background taps so the subject doesn't bleed into it),
+ * kept only where the subject mask says background.
+ */
+export const SUBJECT_PREP_FS = /* glsl */ `${HEAD}${MIX_PREMUL}
+uniform sampler2D u_img;        // the layer's picture (mipmapped)
+uniform float u_bgBrightness;   // 1 as is
+uniform float u_bgSaturation;   // 1 as is
+uniform float u_bgBlur;         // 0–1
+const int TAPS = 32;
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_res;
+  vec4 c = texture(u_img, uv);
+  vec4 t = c;
+  if (u_bgBlur > 0.0) {
+    // Radius: up to 3% of the layer's height, whatever the buffer's size.
+    float r = u_bgBlur * 0.03;
+    vec2 R = vec2(r * u_res.y / u_res.x, r);
+    float lod = max(0.0, log2(r * float(textureSize(u_img, 0).y) * 0.3));
+    vec4 accAll = vec4(0.0);
+    vec4 accBg = vec4(0.0);
+    float wAll = 0.0;
+    float wBg = 0.0;
+    for (int i = 0; i < TAPS; i++) {
+      float fi = float(i) + 0.5;
+      float d = sqrt(fi / float(TAPS));
+      float th = fi * 2.39996323;
+      vec2 tap = uv + vec2(cos(th), sin(th)) * d * R;
+      vec4 s = textureLod(u_img, tap, lod);
+      vec4 sp = vec4(s.rgb * s.a, s.a);
+      float w = 1.0 - 0.6 * d * d;
+      float wb = w * (1.0 - subjectAt(tap));
+      accAll += sp * w;
+      wAll += w;
+      accBg += sp * wb;
+      wBg += wb;
+    }
+    // Deep inside the subject there are no background taps: fall back to all of them.
+    vec4 blur = mix(accAll / wAll, accBg / max(wBg, 1e-4), clamp(wBg / (wAll * 0.15), 0.0, 1.0));
+    t = vec4(blur.rgb / max(blur.a, 1e-5), blur.a);
+  }
+  t.rgb = clamp(saturation(t.rgb, u_bgSaturation) * u_bgBrightness, 0.0, 1.0);
+  fragColor = mixPremul(t, c, subjectAt(uv));
+}
+`;
+
+/**
+ * A separated layer's composition: its looks only in their part (combined
+ * with the untouched picture like a look with its base: blend mode, then
+ * strength), and only the part of the layer that shows keeps its alpha.
+ */
+export const SUBJECT_MATTE_FS = /* glsl */ `${HEAD}${MIX_PREMUL}
+uniform sampler2D u_img;        // the untouched picture (background treated)
+uniform sampler2D u_fx;         // the layer's looks over it
+uniform float u_looksPart;      // 0 all, 1 subject, 2 background
+uniform float u_looksBlend;
+uniform float u_looksMix;       // 0 when the layer has no looks
+uniform float u_showPart;       // 0 all, 1 subject, 2 background
+void main() {
+  vec2 uv = gl_FragCoord.xy / u_res;
+  vec4 base = texture(u_img, uv);
+  vec4 fx = texture(u_fx, uv);
+  float m = subjectAt(uv);
+  vec3 blended = blendRGB(base.rgb, fx.rgb, int(u_looksBlend + 0.5));
+  // Over a transparent base the looks' own colour shows as-is.
+  blended = mix(fx.rgb, blended, base.a);
+  vec4 c = mixPremul(base, vec4(blended, fx.a), partOf(u_looksPart, m) * u_looksMix);
+  fragColor = vec4(c.rgb, c.a * partOf(u_showPart, m));
+}
+`;
+
+/**
+ * The canvas's subject mask, one placed layer at a time (blended over what's
+ * there with SRC_ALPHA, ONE_MINUS_SRC_ALPHA): the layer's subject where it
+ * shows, so a layer without one (or showing only its background) covers the
+ * subjects below it. Same placement maths as LAYER_FS.
+ */
+export const SUBJECT_MASK_FS = /* glsl */ `${HEAD}
+uniform sampler2D u_layer;
+uniform mat3 u_inv;
+uniform float u_opacity;
+uniform float u_subject;        // 1: the layer's subject counts, 0: it only covers
+void main() {
+  vec2 px = gl_FragCoord.xy;
+  vec3 q = u_inv * vec3(px, 1.0);
+  vec2 uv = q.xy / (abs(q.z) < 1e-6 ? 1e-6 : q.z);
+  vec2 dx = dFdx(uv);
+  vec2 dy = dFdy(uv);
+  vec4 L = textureGrad(u_layer, clamp(uv, 0.0, 1.0), dx, dy);
+  vec2 fw = abs(dx) + abs(dy);
+  vec2 edge = min(uv, 1.0 - uv) / max(fw, vec2(1e-6));
+  float cov = q.z > 0.0 ? clamp(min(edge.x, edge.y) + 0.5, 0.0, 1.0) : 0.0;
+  float s = u_subject > 0.5 ? subjectAt(clamp(uv, 0.0, 1.0)) : 0.0;
+  fragColor = vec4(s, 0.0, 0.0, L.a * u_opacity * cov);
+}
+`;
+
 /** Bloom / streak bright pass: 4 taps, soft-knee threshold. */
 export const BRIGHT_FS = /* glsl */ `${HEAD}
 uniform sampler2D u_img;

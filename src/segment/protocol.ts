@@ -6,7 +6,15 @@ export interface SegmentRequest {
   rgba: Uint8ClampedArray;
   width: number;
   height: number;
+  /**
+   * A waiting request is dropped once a newer one arrives in the same lane
+   * (newest wins); null never drops, for work that needs every result.
+   */
+  lane: string | null;
 }
+
+/** The error a request dropped for a newer one in its lane fails with. */
+export const SUPERSEDED = 'Superseded by a newer request.';
 
 export type SegmentPhase = 'download' | 'init' | 'infer' | 'refine';
 

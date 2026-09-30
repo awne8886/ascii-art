@@ -7,13 +7,17 @@ import {
   type ExportProgress,
 } from '../export/exporter';
 import { type MediaStore } from '../media';
-import { type Project } from '../model';
+import { layerActive, type Layer, type Project } from '../model';
+import { type SubjectStore } from '../subject/store';
 import { ColorRow } from './controls';
 import { Icon, type IconName } from './icons';
+import { useSubjectsVersion } from './SubjectPanel';
 
 interface Props {
   project: Project;
   media: MediaStore;
+  /** Separated subjects: every exported frame gets its own masks. */
+  subjects: SubjectStore;
   time: number;
   onClose: () => void;
   onDone: (msg: string) => void;
@@ -48,7 +52,27 @@ function mb(bytes: number): string {
   return bytes > 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.ceil(bytes / 1e3)} KB`;
 }
 
-export function ExportDialog({ project, media, time, onClose, onDone }: Props) {
+/**
+ * Layers in the export whose subject is switched on but has no masks to
+ * draw yet (not analysed, still analysing, or failed): they export as if
+ * separation were off, which is worth knowing before a long render.
+ */
+function subjectWarnings(project: Project, subjects: SubjectStore, inExport: (l: Layer) => boolean): string[] {
+  const out: string[] = [];
+  for (const l of project.layers) {
+    if (!l.subject?.on || !inExport(l)) continue;
+    const info = subjects.info(l);
+    if (info.status === 'running' && info.frames) {
+      out.push(`${l.name}: subject still being analysed again — it exports with the masks from before`);
+    } else if (info.status === 'none' || info.status === 'running' || info.status === 'error') {
+      const pct = info.status === 'running' ? ` (${Math.round((info.job?.progress ?? 0) * 100)}% analysed)` : '';
+      out.push(`${l.name}: subject not separated yet${pct} — it exports without separation`);
+    }
+  }
+  return out;
+}
+
+export function ExportDialog({ project, media, subjects, time, onClose, onDone }: Props) {
   const c = project.canvas;
   const hasSound = project.layers.some((l) => l.kind === 'video' && !l.muted);
   const [format, setFormat] = useState<ExportFormat>('mp4');
@@ -84,6 +108,11 @@ export function ExportDialog({ project, media, time, onClose, onDone }: Props) {
     [format, w, h, duration, fps, blur, bg, custom, time, sound, video],
   );
 
+  useSubjectsVersion(subjects);
+  const warnings = subjectWarnings(project, subjects, (l) =>
+    format === 'png' ? layerActive(l, time) : l.visible && l.start < duration && l.start + l.length > 0,
+  );
+
   useEffect(() => () => abort.current?.abort(), []);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -99,7 +128,7 @@ export function ExportDialog({ project, media, time, onClose, onDone }: Props) {
     abort.current = ctrl;
     setProgress({ phase: 'prepare', done: 0, total: frames });
     try {
-      const r = await exportProject(project, media, opts, setProgress, ctrl.signal);
+      const r = await exportProject(project, media, opts, setProgress, ctrl.signal, subjects);
       download(r.blob, r.name);
       onDone(`Exported ${r.name} (${mb(r.blob.size)}).`);
       onClose();
@@ -121,7 +150,7 @@ export function ExportDialog({ project, media, time, onClose, onDone }: Props) {
         width: Math.round(w * Math.min(1, 640 / w)),
         height: Math.round(h * Math.min(1, 640 / w)),
       };
-      const r = await exportProject(project, media, small, () => {}, new AbortController().signal);
+      const r = await exportProject(project, media, small, () => {}, new AbortController().signal, subjects);
       setPreview((old) => {
         if (old) URL.revokeObjectURL(old);
         return URL.createObjectURL(r.blob);
@@ -308,6 +337,13 @@ export function ExportDialog({ project, media, time, onClose, onDone }: Props) {
           <p className="export__error" role="alert">
             {error}
           </p>
+        )}
+        {warnings.length > 0 && (
+          <ul className="export__warn">
+            {warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
         )}
 
         <div className="export__foot">

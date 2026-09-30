@@ -1,5 +1,5 @@
 import { type SegmentMethod } from '../settings';
-import { type SegmentPhase, type SegmentRequest, type SegmentResponse } from './protocol';
+import { SUPERSEDED, type SegmentPhase, type SegmentRequest, type SegmentResponse } from './protocol';
 import { type SoftMask } from './refine';
 
 export interface SegmentProgress {
@@ -59,16 +59,26 @@ function getWorker(): Worker {
   return w;
 }
 
+/** The lane the classic site asks in: a new picture overtakes one still waiting. */
+export const DEFAULT_LANE = 'default';
+
+/** Whether a segment() failure only means a newer request in the same lane overtook it. */
+export function isSuperseded(e: unknown): boolean {
+  return e instanceof Error && e.message === SUPERSEDED;
+}
+
 /**
  * Separate subject from background. The image is copied to the worker, so
  * the caller keeps its pixels. Calls with the same `key` while one is running
- * share that run.
+ * share that run. A request still waiting when a newer one arrives in the
+ * same `lane` fails (see isSuperseded); with lane null it always runs.
  */
 export function segment(
   key: string,
   image: { rgba: Uint8ClampedArray; width: number; height: number },
   method: SegmentMethod,
   onProgress?: (p: SegmentProgress) => void,
+  lane: string | null = DEFAULT_LANE,
 ): Promise<SegmentResult> {
   const running = inflight.get(key);
   if (running) {
@@ -77,7 +87,7 @@ export function segment(
   }
   const id = nextId++;
   const listeners = new Set<(p: SegmentProgress) => void>(onProgress ? [onProgress] : []);
-  const req: SegmentRequest = { id, method, rgba: image.rgba, width: image.width, height: image.height };
+  const req: SegmentRequest = { id, method, rgba: image.rgba, width: image.width, height: image.height, lane };
   const promise = new Promise<SegmentResult>((resolve, reject) => {
     pending.set(id, { resolve, reject, listeners });
     getWorker().postMessage(req);
