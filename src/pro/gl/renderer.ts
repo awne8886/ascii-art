@@ -1,9 +1,11 @@
 import { effectById, effectSource } from '../effects/registry';
 import { type EffectDef, type ParamValues } from '../effects/types';
-import { invert3, layerQuad, squareToQuad, type Mat3 } from '../geometry';
+import { followShift, invert3, layerQuad, squareToQuad, type Mat3 } from '../geometry';
 import {
   resolveParams,
   layerActive,
+  mediaTime,
+  trackAt,
   type CanvasFinish,
   type EffectInstance,
   type Layer,
@@ -115,6 +117,17 @@ export function backgroundColor(project: Project): [number, number, number, numb
   return [0, 0, 0, 1];
 }
 
+type TrackBox = [number, number, number, number];
+const NO_TRACK: TrackBox = [0, 0, 0, 0];
+
+/** The layer's tracked object at time t (centre x, y, width, height in its uv), for "appears in: tracked object". */
+function trackBox(layer: Layer, t: number): TrackBox {
+  const tr = layer.track;
+  if (!tr) return NO_TRACK;
+  const s = trackAt(tr, mediaTime(layer, t, tr.duration) ?? tr.at);
+  return [s.cx, s.cy, s.w, s.h];
+}
+
 const MAX_SIDE = 4096;
 const MAX_AREA = 16e6;
 const CANVAS_OWNER = '__canvas__';
@@ -135,6 +148,8 @@ export class ProRenderer {
   private blank!: WebGLTexture;
   private vao!: WebGLVertexArrayObject;
   private atlasClock = 0;
+  /** Last known picture size of each layer (for followers of a layer that's off screen). */
+  private sizes = new Map<string, [number, number]>();
   private lost = false;
   /** The last frame rendered (before it went to the screen). */
   private last: Target | null = null;
@@ -426,7 +441,7 @@ export class ProRenderer {
     input: WebGLTexture,
     out: Target,
     prev: Target | null,
-    ctx: { time: number; duration: number; frame: number; unit: number },
+    ctx: { time: number; duration: number; frame: number; unit: number; track?: TrackBox },
   ): boolean {
     const p = this.effectProgram(def);
     if (!p) return false;
@@ -451,6 +466,7 @@ export class ProRenderer {
     this.f(p, 'u_appears', fx.appears);
     this.f(p, 'u_appearsSoft', fx.appearsSoft);
     this.f(p, 'u_appearsInvert', fx.appearsInvert ? 1 : 0);
+    this.f(p, 'u_track', ...(ctx.track ?? NO_TRACK));
     for (const def2 of def.params) {
       if (def2.type === 'text') continue;
       const loc = p.u[`u_${def2.key}`];
@@ -474,7 +490,15 @@ export class ProRenderer {
     w: number,
     h: number,
     effects: readonly EffectInstance[],
-    ctx: { time: number; duration: number; frame: number; unit: number; sound: number; still: boolean },
+    ctx: {
+      time: number;
+      duration: number;
+      frame: number;
+      unit: number;
+      sound: number;
+      still: boolean;
+      track?: TrackBox;
+    },
   ): { tex: WebGLTexture; target: Target | null } {
     let cur = input;
     let curTarget: Target | null = null;
@@ -680,9 +704,19 @@ export class ProRenderer {
     this.draw();
 
     const layerProg = this.fixed('layer', LAYER_FS);
+    // Every active layer's picture first: a layer that follows another needs the other's size.
+    const frames = new Map<string, LayerFrame>();
     for (const layer of project.layers) {
       if (!layerActive(layer, input.time)) continue;
       const frame = input.frameOf(layer);
+      if (frame) {
+        frames.set(layer.id, frame);
+        this.sizes.set(layer.id, [frame.width, frame.height]);
+      }
+    }
+    const sizeOf = (l: Layer) => this.sizes.get(l.id) ?? null;
+    for (const layer of project.layers) {
+      const frame = frames.get(layer.id);
       if (!frame) continue;
       const owner = this.owner(still ? `${THUMB_OWNER}:${layer.id}` : layer.id);
       if (!owner.srcTex) owner.srcTex = this.texture(true);
@@ -690,7 +724,8 @@ export class ProRenderer {
         if (this.upload(owner.srcTex, frame.source)) owner.srcVersion = frame.version;
         else if (owner.srcVersion === null) continue;
       }
-      const { quad, opacity, size } = layerQuad(layer, frame.width, frame.height, canvas, input.time);
+      const shift = followShift(project, layer, input.time, sizeOf);
+      const { quad, opacity, size } = layerQuad(layer, frame.width, frame.height, canvas, input.time, shift);
       if (opacity <= 0) continue;
       const [bw, bh] = this.bufferSize(size[0], size[1], k, layer.scale);
       const sound = input.sound?.(layer) ?? 0;
@@ -701,6 +736,7 @@ export class ProRenderer {
         unit: bw / Math.max(1, size[0]),
         sound,
         still,
+        track: trackBox(layer, input.time),
       };
       let tex = this.runEffects(owner, owner.srcTex, bw, bh, layer.effects, fxCtx).tex;
       const glowed = this.glow(owner, tex, bw, bh, layer.finish, still);

@@ -749,6 +749,48 @@
   cursor: grab;
 }
 
+.trackbox {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.trackbox polygon,
+.trackbox rect {
+  fill: rgba(255, 90, 60, 0.08);
+  stroke: var(--pepperoni);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+}
+
+.trackbox text {
+  fill: var(--pepperoni);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+}
+
+.interaction--pick {
+  cursor: crosshair;
+}
+
+.pickhint {
+  position: absolute;
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--pepperoni);
+  text-shadow: 0 1px 3px #000;
+}
+
 .guides line {
   stroke: rgba(245, 236, 215, 0.22);
   stroke-width: 1;
@@ -3130,4 +3172,41 @@ kbd {
   .modal__box {
     animation: none;
   }
+}
+
+/* Track */
+
+.trackstats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.trackstats span {
+  padding: 8px;
+  border: 1px solid var(--p-line);
+  border-radius: 8px;
+  background: var(--p-well);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--muted);
+}
+
+.trackstats b {
+  display: block;
+  font-size: 16px;
+  color: var(--text);
+}
+
+.trackprogress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.trackprogress .bar {
+  flex: 1;
 }

@@ -25,6 +25,7 @@ const APPEARS: ReadonlyArray<{ value: Appears; label: string }> = [
   { value: 2, label: 'Darks' },
   { value: 3, label: 'Centre' },
   { value: 4, label: 'Edges' },
+  { value: 5, label: 'Tracked object' },
 ];
 
 interface Props {

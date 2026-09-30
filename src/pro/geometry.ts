@@ -1,4 +1,12 @@
-import { type CanvasSettings, type Layer, type MotionInstance } from './model';
+import {
+  mediaTime,
+  timelineTime,
+  trackAt,
+  type CanvasSettings,
+  type Layer,
+  type MotionInstance,
+  type Project,
+} from './model';
 
 /**
  * Where a layer lands on the canvas: its fitted size, then position, scale,
@@ -118,15 +126,16 @@ export function layerQuad(
   intrinsicH: number,
   canvas: Pick<CanvasSettings, 'width' | 'height' | 'duration'>,
   t: number,
+  shift?: Shift,
 ): { quad: [Point, Point, Point, Point]; opacity: number; size: [number, number] } {
   const [w, h] = fittedSize(layer, intrinsicW, intrinsicH, canvas);
   const mo = motionAt(layer.motion, t, canvas.duration);
-  const scale = layer.scale * mo.scale;
+  const scale = layer.scale * mo.scale * (shift?.scale ?? 1);
   const rot = ((layer.rotation + mo.rotation) * Math.PI) / 180;
   const tx = ((layer.tiltX + mo.tiltX) * Math.PI) / 180;
   const ty = ((layer.tiltY + mo.tiltY) * Math.PI) / 180;
-  const cx = canvas.width / 2 + (layer.x + mo.x) * canvas.width;
-  const cy = canvas.height / 2 + (layer.y + mo.y) * canvas.height;
+  const cx = canvas.width / 2 + (layer.x + mo.x) * canvas.width + (shift?.x ?? 0);
+  const cy = canvas.height / 2 + (layer.y + mo.y) * canvas.height + (shift?.y ?? 0);
   // Focal length: stronger perspective = shorter lens.
   const focal = Math.max(canvas.width, canvas.height) * (0.6 + 3.4 * (1 - Math.max(0, Math.min(1, layer.perspective))));
   const fx = layer.flipX ? -1 : 1;
@@ -159,6 +168,57 @@ export function layerQuad(
     return [cx + x * k, cy + y * k] as Point;
   }) as [Point, Point, Point, Point];
   return { quad, opacity: layer.opacity * mo.opacity, size: [w, h] };
+}
+
+/** Extra movement for a layer that follows a tracked object: canvas px, and a scale factor. */
+export interface Shift {
+  x: number;
+  y: number;
+  scale: number;
+}
+
+/** Intrinsic size (canvas px) of a layer's picture, when known. */
+export type SizeOf = (layer: Layer) => [number, number] | null;
+
+/** Canvas point at uv (u, v) of a layer placed on quad. */
+export function quadPoint(quad: readonly Point[], u: number, v: number): Point {
+  return apply3(squareToQuad(quad), u, v) ?? [(quad[0]![0] + quad[2]![0]) / 2, (quad[0]![1] + quad[2]![1]) / 2];
+}
+
+/**
+ * How far a following layer moves (and grows) at time t: the tracked
+ * object's movement on the canvas since the moment its box was drawn, so
+ * the follower stays where it was put relative to the object.
+ */
+export function followShift(project: Project, layer: Layer, t: number, sizeOf: SizeOf, depth = 0): Shift | undefined {
+  const f = layer.follow;
+  if (!f || depth > 3) return undefined;
+  const target = project.layers.find((l) => l.id === f.layerId && l.id !== layer.id);
+  const track = target?.track;
+  const size = target && sizeOf(target);
+  if (!target || !track || !size) return undefined;
+  const at = (time: number) => {
+    const shift = followShift(project, target, time, sizeOf, depth + 1);
+    const q = layerQuad(target, size[0], size[1], project.canvas, time, shift).quad;
+    const s = trackAt(track, mediaTime(target, time, track.duration) ?? track.at);
+    const p = quadPoint(q, s.cx, s.cy);
+    const e = quadPoint(q, s.cx + s.w / 2, s.cy);
+    return { p, r: Math.hypot(e[0] - p[0], e[1] - p[1]) };
+  };
+  const now = at(t);
+  const ref = at(timelineTime(target, track.at));
+  return {
+    x: now.p[0] - ref.p[0],
+    y: now.p[1] - ref.p[1],
+    scale: f.scale ? Math.max(0.05, Math.min(20, now.r / Math.max(1e-6, ref.r))) : 1,
+  };
+}
+
+/** A layer's corners at time t, including any follow. Null until its size is known. */
+export function placedQuad(project: Project, layer: Layer, t: number, sizeOf: SizeOf) {
+  const size = sizeOf(layer);
+  if (!size) return null;
+  return layerQuad(layer, size[0], size[1], project.canvas, t, followShift(project, layer, t, sizeOf));
 }
 
 /** Homography mapping the unit square (u right, v down) onto quad (TL, TR, BR, BL). */

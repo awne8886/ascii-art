@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Curtain } from '../Curtain';
 import { takeHandoff } from '../handoff';
 import { Clock } from './clock';
-import { DrawnCache, layerSize } from './frames';
+import { DrawnCache, layerMediaDuration, layerSize } from './frames';
+import { placedQuad, quadPoint } from './geometry';
 import { MediaStore, type MediaItem } from './media';
 import {
   defaultShape,
   defaultText,
+  mediaTime,
   newLayer,
+  timelineTime,
   newProject,
   uid,
   type Layer,
@@ -22,6 +25,7 @@ import { PanelTitle } from './ui/controls';
 import { ExportDialog } from './ui/ExportDialog';
 import { Icon, type IconName } from './ui/icons';
 import { LookPanel } from './ui/LookPanel';
+import { TrackPanel } from './ui/TrackPanel';
 import { HelpModal, TemplatesModal, WelcomeModal } from './ui/modals';
 import {
   CanvasPanel,
@@ -38,7 +42,7 @@ import { Timeline } from './ui/Timeline';
 import { Viewport, type Zoom } from './ui/Viewport';
 import './pro.css';
 
-type Tab = 'look' | 'move' | 'sound' | '3d' | 'layer' | 'canvas' | 'finish' | 'scene';
+type Tab = 'look' | 'move' | 'sound' | '3d' | 'track' | 'layer' | 'canvas' | 'finish' | 'scene';
 type Modal = 'export' | 'templates' | 'welcome' | 'help' | null;
 
 const WELCOMED_KEY = 'ascii-art:pro:welcomed';
@@ -53,6 +57,7 @@ const TAB_TITLE: Record<Tab, string> = {
   canvas: 'Canvas',
   finish: 'Finish',
   scene: 'Scene',
+  track: 'Track',
 };
 
 function starter(): Project {
@@ -87,6 +92,7 @@ export function ProApp() {
   const [zoom, setZoom] = useState<Zoom>('fit');
   const [soundOn, setSoundOn] = useState(true);
   const [scene, setScene] = useState<SceneOptions>({ handles: true, guides: false, quality: 'auto' });
+  const [picking, setPicking] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const [leaving, setLeaving] = useState(false);
@@ -270,6 +276,46 @@ export function ProApp() {
     studio.commit(addLayer(copy), undefined, copy.id);
   }, [layer, media, studio]);
 
+  // ─── Tracking ────────────────────────────────────────────────────────────
+
+  const onPicked = useCallback(
+    (box: [number, number, number, number] | null) => {
+      setPicking(false);
+      if (!box || !layer) return;
+      const duration = layerMediaDuration(layer, media) ?? 0;
+      const at = mediaTime(layer, clock.time, duration) ?? layer.in;
+      studio.commit(updateLayer(layer.id, { track: { box, at, duration, from: at, fps: 30, data: [] } }));
+    },
+    [layer, media, clock, studio],
+  );
+
+  /** A text label that follows the selected layer's tracked object, placed just above it. */
+  const addFollowLabel = useCallback(() => {
+    if (!layer?.track) return;
+    const p = studio.project;
+    const t = timelineTime(layer, layer.track.at);
+    const q = placedQuad(p, layer, t, (l) => layerSize(l, p, media, drawn));
+    const [x, y, w] = layer.track.box;
+    const [px, py] = q ? quadPoint(q.quad, x + w / 2, y) : [p.canvas.width / 2, p.canvas.height / 2];
+    const label = newLayer('text', 'Label', {
+      text: {
+        ...defaultText(),
+        text: 'THIS ONE',
+        size: 0.06,
+        font: 'mono',
+        weight: 700,
+        backgroundOn: true,
+        background: '#ff5a3c',
+      },
+      x: px / p.canvas.width - 0.5,
+      y: py / p.canvas.height - 0.5 - 0.06,
+      follow: { layerId: layer.id, scale: false },
+      length: p.canvas.duration,
+    });
+    studio.commit(addLayer(label), undefined, label.id);
+    setTab('layer');
+  }, [layer, studio, media, drawn]);
+
   const remove = useCallback(() => {
     if (!layer) return;
     studio.commit(removeLayer(layer.id), undefined, null);
@@ -451,7 +497,7 @@ export function ProApp() {
   }, [addFiles]);
 
   // A tab that doesn't apply to the current target falls back to Look.
-  const layerTabs: Tab[] = ['look', 'move', 'sound', '3d', 'layer', 'canvas'];
+  const layerTabs: Tab[] = ['look', 'move', 'sound', '3d', 'track', 'layer', 'canvas'];
   const canvasTabs: Tab[] = ['look', 'finish', 'scene', 'canvas'];
   const activeTab: Tab = (layer ? layerTabs : canvasTabs).includes(tab) ? tab : 'look';
 
@@ -466,6 +512,7 @@ export function ProApp() {
         { tab: 'move', label: 'Move', icon: 'move', live: layer.motion.some((m) => m.enabled) },
         { tab: 'sound', label: 'Sound', icon: 'wave', live: layer.kind === 'video' && !layer.muted },
         { tab: '3d', label: '3D', icon: 'cube', live: layer.tiltX !== 0 || layer.tiltY !== 0 },
+        { tab: 'track', label: 'Track', icon: 'target', live: !!layer.track?.data.length || !!layer.follow },
         {
           tab: 'layer',
           label: 'Layer',
@@ -699,6 +746,8 @@ export function ProApp() {
           dock={dock}
           empty={empty}
           onError={setToast}
+          picking={picking && !!layer}
+          onPicked={onPicked}
         />
       </main>
 
@@ -720,6 +769,21 @@ export function ProApp() {
               <SoundPanel studio={studio} layer={layer} media={media} soundOn={soundOn} setSoundOn={setSoundOn} />
             )}
             {activeTab === '3d' && layer && <TiltPanel studio={studio} layer={layer} />}
+            {activeTab === 'track' && layer && (
+              <TrackPanel
+                studio={studio}
+                layer={layer}
+                media={media}
+                picking={picking}
+                onPick={() => {
+                  clock.pause();
+                  setPicking(true);
+                }}
+                onAddLabel={addFollowLabel}
+                toast={setToast}
+                key={layer.id}
+              />
+            )}
             {activeTab === 'layer' && layer && (
               <LayerPanel
                 studio={studio}

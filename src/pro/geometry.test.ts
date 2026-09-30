@@ -108,3 +108,31 @@ describe('motionAt', () => {
     });
   });
 });
+
+describe('followShift', () => {
+  it('moves a follower with the tracked object, from where it was when the box was drawn', async () => {
+    const { followShift } = await import('./geometry');
+    const { newProject } = await import('./model');
+    const project = newProject();
+    const video = newLayer('video', 'v', { fit: 'stretch', length: 6 });
+    // The object moves from the left third to the right third over 2 s of media.
+    video.track = {
+      box: [0.3, 0.4, 0.1, 0.1],
+      at: 0,
+      duration: 6,
+      from: 0,
+      fps: 1,
+      data: [0.35, 0.45, 0.1, 0.1, 1, 0.5, 0.45, 0.1, 0.1, 1, 0.65, 0.45, 0.2, 0.2, 1],
+    };
+    const label = newLayer('text', 'l', { follow: { layerId: video.id, scale: true } });
+    project.layers = [video, label];
+    const sizeOf = () => [1920, 1080] as [number, number];
+    expect(followShift(project, label, 0, sizeOf)).toEqual({ x: 0, y: 0, scale: 1 });
+    const s = followShift(project, label, 2, sizeOf)!;
+    expect(s.x).toBeCloseTo(0.3 * 1920, 3);
+    expect(s.y).toBeCloseTo(0, 3);
+    expect(s.scale).toBeCloseTo(2, 3);
+    // Not following: no shift.
+    expect(followShift(project, { ...label, follow: undefined }, 2, sizeOf)).toBeUndefined();
+  });
+});

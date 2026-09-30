@@ -42,3 +42,23 @@ describe('timing', () => {
     expect(mediaTime({ ...layer, loopMedia: false }, 3, 3)).toBeCloseTo(2.999);
   });
 });
+
+describe('trackAt', () => {
+  it('interpolates samples, and uses the drawn box before tracking', async () => {
+    const { trackAt } = await import('./model');
+    const track = {
+      box: [0.1, 0.2, 0.2, 0.2] as [number, number, number, number],
+      at: 1,
+      duration: 4,
+      from: 1,
+      fps: 2,
+      data: [] as number[],
+    };
+    expect(trackAt(track, 3)).toEqual({ cx: 0.2, cy: 0.30000000000000004, w: 0.2, h: 0.2, conf: 1 });
+    const tracked = { ...track, data: [0.2, 0.3, 0.2, 0.2, 1, 0.4, 0.3, 0.2, 0.2, 0.5] };
+    expect(trackAt(tracked, 1.25).cx).toBeCloseTo(0.3);
+    expect(trackAt(tracked, 1.25).conf).toBeCloseTo(0.75);
+    expect(trackAt(tracked, 9).cx).toBeCloseTo(0.4);
+    expect(trackAt(tracked, 0).cx).toBeCloseTo(0.2);
+  });
+});

@@ -177,7 +177,8 @@ vec3 blendRGB(vec3 b, vec3 s, int mode) {
 export const EFFECT_MAIN = /* glsl */ `
 uniform float u_strength;
 uniform float u_blend;
-uniform float u_appears;       // 0 everywhere, 1 brights, 2 darks, 3 centre, 4 edges
+uniform float u_appears;       // 0 everywhere, 1 brights, 2 darks, 3 centre, 4 edges, 5 tracked object
+uniform vec4 u_track;          // tracked object: centre x, y, width, height in uv (width 0: none)
 uniform float u_appearsSoft;
 uniform float u_appearsInvert;
 out vec4 fragColor;
@@ -192,6 +193,12 @@ float appearsIn(vec2 uv, vec4 base) {
   else if (a == 3) {
     vec2 d = (uv - 0.5) * vec2(u_res.x / u_res.y, 1.0);
     m = 1.0 - smoothstep(0.32 - s * 0.5, 0.32 + s * 0.5, length(d));
+  } else if (a == 5) {
+    if (u_track.z <= 0.0) return u_appearsInvert > 0.5 ? 0.0 : 1.0;
+    // A soft-cornered box around the object; softness widens its edge.
+    vec2 q = abs(uv - u_track.xy) / max(u_track.zw * 0.5, vec2(1e-4));
+    float d = length(max(q - 0.7, 0.0)) + min(max(q.x, q.y) - 0.7, 0.0) + 0.7;
+    m = 1.0 - smoothstep(1.0 - s, 1.0 + s, d);
   } else {
     m = smoothstep(0.1, 0.1 + s, length(sobel(uv, 1.5)));
   }

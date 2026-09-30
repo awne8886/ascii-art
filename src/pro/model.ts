@@ -13,8 +13,33 @@ import { defaultParams, presetParams, type ParamValues } from './effects/types';
 /** Index into BLEND_MODES. */
 export type BlendMode = number;
 
-/** Where an effect shows: 0 everywhere, 1 brights, 2 darks, 3 centre, 4 edges. */
-export type Appears = 0 | 1 | 2 | 3 | 4;
+/** Where an effect shows: 0 everywhere, 1 brights, 2 darks, 3 centre, 4 edges, 5 the tracked object. */
+export type Appears = 0 | 1 | 2 | 3 | 4 | 5;
+
+/**
+ * An object followed through a layer's video. Positions are in the layer's
+ * own uv (0–1, y down) and keyed by media time, so trimming or moving the
+ * clip on the timeline keeps them in place.
+ */
+export interface Track {
+  /** The box drawn around the object (top-left x, y, width, height), at media time `at`. */
+  box: [number, number, number, number];
+  at: number;
+  /** Length of the media the track belongs to (for looping clips). */
+  duration: number;
+  /** First sample's media time, and samples per second. */
+  from: number;
+  fps: number;
+  /** Per sample: centre x, centre y, width, height, confidence (0–1). Empty until tracked. */
+  data: number[];
+}
+
+/** A layer riding along with another layer's tracked object. */
+export interface Follow {
+  layerId: string;
+  /** Also grow and shrink with it. */
+  scale: boolean;
+}
 
 /** Drives a numeric param over time: a seamless loop between its value and `to`, or the layer's sound. */
 export interface Modulation {
@@ -194,6 +219,8 @@ export interface Layer {
   effects: EffectInstance[];
   motion: MotionInstance[];
   finish: LayerFinish;
+  track?: Track;
+  follow?: Follow;
 }
 
 export type Background = 'transparent' | 'light' | 'dark' | 'color';
@@ -399,4 +426,34 @@ export function upgradeEffect(fx: EffectInstance): EffectInstance {
   const def = effectById(fx.effectId);
   if (!def) return fx;
   return { ...fx, params: { ...defaultParams(def), ...fx.params } };
+}
+
+export interface TrackSample {
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
+  conf: number;
+}
+
+/** Where the tracked object is at media time mt (interpolated; the drawn box until it has been tracked). */
+export function trackAt(track: Track, mt: number): TrackSample {
+  const n = Math.floor(track.data.length / 5);
+  if (n === 0) {
+    const [x, y, w, h] = track.box;
+    return { cx: x + w / 2, cy: y + h / 2, w, h, conf: 1 };
+  }
+  const f = Math.max(0, Math.min(n - 1, (mt - track.from) * track.fps));
+  const i = Math.floor(f);
+  const j = Math.min(n - 1, i + 1);
+  const k = f - i;
+  const d = track.data;
+  const at = (o: number) => d[i * 5 + o]! + (d[j * 5 + o]! - d[i * 5 + o]!) * k;
+  return { cx: at(0), cy: at(1), w: at(2), h: at(3), conf: at(4) };
+}
+
+/** Timeline time at which a layer shows media time mt (clamped to where the layer is on the timeline). */
+export function timelineTime(layer: Layer, mt: number): number {
+  const t = layer.start + (mt - layer.in) / Math.max(0.0625, layer.speed);
+  return Math.max(layer.start, Math.min(layer.start + Math.max(0, layer.length - 1e-3), t));
 }

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useClock, type Clock } from '../clock';
 import { type DrawnCache, layerSize, previewFrame, soundLevel, syncVideos, videoClock } from '../frames';
-import { layerQuad, hitUv, type Point } from '../geometry';
+import { apply3, hitUv, invert3, placedQuad, quadPoint, squareToQuad, type Point } from '../geometry';
 import { ProRenderer } from '../gl/renderer';
 import { type MediaStore } from '../media';
-import { layerActive, type Layer, type Project } from '../model';
+import { layerActive, mediaTime, trackAt, type Layer, type Project } from '../model';
 import { updateLayer, type Studio } from '../store';
 import { Icon } from './icons';
 import { type SceneOptions } from './panels';
@@ -24,13 +24,30 @@ interface Props {
   dock: ReactNode;
   empty: ReactNode;
   onError: (msg: string) => void;
+  /** Drawing the box around an object to track on the selected layer. */
+  picking: boolean;
+  onPicked: (box: [number, number, number, number] | null) => void;
 }
 
 const PAD = 40;
 const DOCK_SPACE = 118;
 
 /** The canvas, its live preview, and direct manipulation of the selected layer. */
-export function Viewport({ studio, media, clock, drawn, zoom, setZoom, soundOn, scene, dock, empty, onError }: Props) {
+export function Viewport({
+  studio,
+  media,
+  clock,
+  drawn,
+  zoom,
+  setZoom,
+  soundOn,
+  scene,
+  dock,
+  empty,
+  onError,
+  picking,
+  onPicked,
+}: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [box, setBox] = useState<[number, number]>([800, 600]);
@@ -177,7 +194,14 @@ export function Viewport({ studio, media, clock, drawn, zoom, setZoom, soundOn, 
             scene={scene}
             width={dispW}
             height={dispH}
+            picking={picking}
+            onPicked={onPicked}
           />
+          {picking && (
+            <div className="pickhint" style={{ left, top: top + 8, width: dispW }}>
+              Drag a box around what to follow · Esc to cancel
+            </div>
+          )}
           {project.layers.length === 0 && (
             <div className="viewport__empty" style={{ left, top, width: dispW, height: dispH }}>
               {empty}
@@ -266,6 +290,8 @@ function Interaction({
   width,
   height,
   scene,
+  picking,
+  onPicked,
 }: {
   studio: Studio;
   media: MediaStore;
@@ -277,20 +303,27 @@ function Interaction({
   width: number;
   height: number;
   scene: SceneOptions;
+  picking: boolean;
+  onPicked: (box: [number, number, number, number] | null) => void;
 }) {
   const { time } = useClock(clock);
   const project = studio.project;
   const drag = useRef<Drag | null>(null);
   const layerRef = useRef<HTMLDivElement>(null);
+  const [pick, setPick] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
 
   const quadOf = useCallback(
-    (l: Layer, p: Project): [Point, Point, Point, Point] | null => {
-      const size = layerSize(l, p, media, drawn);
-      if (!size) return null;
-      return layerQuad(l, size[0], size[1], p.canvas, clock.time).quad;
-    },
+    (l: Layer, p: Project): [Point, Point, Point, Point] | null =>
+      placedQuad(p, l, clock.time, (x) => layerSize(x, p, media, drawn))?.quad ?? null,
     [media, drawn, clock],
   );
+
+  useEffect(() => {
+    if (!picking) return;
+    const key = (e: KeyboardEvent) => e.key === 'Escape' && onPicked(null);
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  }, [picking, onPicked]);
 
   const toCanvas = (e: { clientX: number; clientY: number }): Point => {
     const r = layerRef.current!.getBoundingClientRect();
@@ -303,6 +336,12 @@ function Interaction({
   const onDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     const [x, y] = toCanvas(e);
+    if (picking) {
+      if (!quad) return;
+      setPick({ x0: x, y0: y, x1: x, y1: y });
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      return;
+    }
     const handle = (e.target as HTMLElement).dataset.handle;
     if (handle && selected && quad) {
       const cx = (quad[0][0] + quad[2][0]) / 2;
@@ -333,6 +372,11 @@ function Interaction({
   };
 
   const onMove = (e: React.PointerEvent) => {
+    if (pick) {
+      const [x, y] = toCanvas(e);
+      setPick({ ...pick, x1: x, y1: y });
+      return;
+    }
     const d = drag.current;
     if (!d) return;
     const [x, y] = toCanvas(e);
@@ -357,7 +401,53 @@ function Interaction({
 
   const onUp = () => {
     drag.current = null;
+    if (!pick || !quad) return;
+    setPick(null);
+    // The dragged rectangle, in the layer's own uv.
+    const inv = invert3(squareToQuad(quad));
+    if (!inv) return;
+    const corners = [
+      [pick.x0, pick.y0],
+      [pick.x1, pick.y0],
+      [pick.x1, pick.y1],
+      [pick.x0, pick.y1],
+    ].map(([cx, cy]) => apply3(inv, cx!, cy!));
+    if (corners.some((c) => !c)) return;
+    const us = corners.map((c) => Math.max(0, Math.min(1, c![0])));
+    const vs = corners.map((c) => Math.max(0, Math.min(1, c![1])));
+    let x0 = Math.min(...us);
+    let y0 = Math.min(...vs);
+    let w = Math.max(...us) - x0;
+    let h = Math.max(...vs) - y0;
+    // A click (or a tiny drag) picks a box around that spot.
+    if (w < 0.02 || h < 0.02) {
+      const cx = x0 + w / 2;
+      const cy = y0 + h / 2;
+      w = 0.16;
+      h = 0.16;
+      x0 = Math.max(0, Math.min(1 - w, cx - w / 2));
+      y0 = Math.max(0, Math.min(1 - h, cy - h / 2));
+    }
+    onPicked([x0, y0, w, h]);
   };
+
+  // Where the selected layer's tracked object is now.
+  let trackPts: Point[] | null = null;
+  let trackConf = 0;
+  if (quad && selected?.track) {
+    const tr = selected.track;
+    const t = trackAt(tr, mediaTime(selected, time, tr.duration) ?? tr.at);
+    trackConf = t.conf;
+    trackPts = [
+      [t.cx - t.w / 2, t.cy - t.h / 2],
+      [t.cx + t.w / 2, t.cy - t.h / 2],
+      [t.cx + t.w / 2, t.cy + t.h / 2],
+      [t.cx - t.w / 2, t.cy + t.h / 2],
+    ].map(([u, v]) => {
+      const [px, py] = quadPoint(quad, u!, v!);
+      return [left + px * scale, top + py * scale] as Point;
+    });
+  }
 
   const pts = quad?.map(([x, y]) => [left + x * scale, top + y * scale] as Point);
   let rot: Point | null = null;
@@ -373,7 +463,7 @@ function Interaction({
   return (
     <div
       ref={layerRef}
-      className="interaction"
+      className={`interaction${picking ? ' interaction--pick' : ''}`}
       onPointerDown={onDown}
       onPointerMove={onMove}
       onPointerUp={onUp}
@@ -396,7 +486,25 @@ function Interaction({
           <line className="guides__mid" x1={0} y1={height / 2} x2={width} y2={height / 2} />
         </svg>
       )}
-      {scene.handles && pts && rot && (
+      {(scene.handles || picking) && trackPts && !pick && (
+        <svg className="trackbox" aria-hidden="true">
+          <polygon points={trackPts.map((p) => p.join(',')).join(' ')} />
+          <text x={trackPts[0]![0] + 4} y={trackPts[0]![1] - 6}>
+            {selected?.track?.data.length ? `TRACK ${trackConf.toFixed(2)}` : 'OBJECT'}
+          </text>
+        </svg>
+      )}
+      {pick && (
+        <svg className="trackbox trackbox--drawing" aria-hidden="true">
+          <rect
+            x={left + Math.min(pick.x0, pick.x1) * scale}
+            y={top + Math.min(pick.y0, pick.y1) * scale}
+            width={Math.abs(pick.x1 - pick.x0) * scale}
+            height={Math.abs(pick.y1 - pick.y0) * scale}
+          />
+        </svg>
+      )}
+      {scene.handles && !picking && pts && rot && (
         <svg className="handles" aria-hidden="true">
           <polygon points={pts.map((p) => p.join(',')).join(' ')} className="handles__frame" />
           <line

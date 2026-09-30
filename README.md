@@ -54,6 +54,11 @@ classic view comes along as the first layer. **Classic** in the rail (or the log
 - **Layers**: pictures, videos, webcam, type, shapes (circle, square, sphere, star, blob…) and the animated sample clip,
   with placement handles, fit, opacity, blend modes, 3D tilt, and **motion** presets (drift, orbit, spin, bounce,
   zoom, shake, swing…) that always loop seamlessly.
+- **Object tracking** (the dock's _Track_ tab): draw a box around something in a video or the sample clip and it is
+  followed through the whole clip (a template tracker with normalized cross-correlation, run frame by frame in the
+  browser, forwards and backwards from where you drew it). Other layers can **follow** it (optionally growing and
+  shrinking with it), _Label that follows_ adds a tag that rides along, and any look can appear only on the **tracked
+  object**.
 - **Finish**: bloom, streaks and trails per layer or for the canvas; paper grain and a colour grade for the canvas.
 - **Canvas & timeline**: aspect presets or any size, length, frame rate, loop, background (see-through, light, dark,
   colour), a transport bar and an expandable timeline where clips can be moved and trimmed.
