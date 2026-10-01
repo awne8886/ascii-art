@@ -20,6 +20,7 @@ import {
 import { SAMPLE_DURATION } from './sources';
 import { addLayer, removeLayer, updateLayer, useStudio } from './store';
 import { clearSavedProject, loadProject, saveMediaFile, saveProject } from './storage';
+import { SubjectStore } from './subject/store';
 import { TEMPLATES, type Template } from './templates';
 import { PanelTitle } from './ui/controls';
 import { ExportDialog } from './ui/ExportDialog';
@@ -38,11 +39,12 @@ import {
   type SceneOptions,
 } from './ui/panels';
 import { AddPanel, LayersPanel } from './ui/rail';
+import { autoAnalyses, refreshSubject, startAnalysis, SubjectPanel, subjectKeys } from './ui/SubjectPanel';
 import { Timeline } from './ui/Timeline';
 import { Viewport, type Zoom } from './ui/Viewport';
 import './pro.css';
 
-type Tab = 'look' | 'move' | 'sound' | '3d' | 'track' | 'layer' | 'canvas' | 'finish' | 'scene';
+type Tab = 'look' | 'move' | 'sound' | '3d' | 'track' | 'subject' | 'layer' | 'canvas' | 'finish' | 'scene';
 type Modal = 'export' | 'templates' | 'welcome' | 'help' | null;
 
 const WELCOMED_KEY = 'ascii-art:pro:welcomed';
@@ -58,6 +60,7 @@ const TAB_TITLE: Record<Tab, string> = {
   finish: 'Finish',
   scene: 'Scene',
   track: 'Track',
+  subject: 'Subject',
 };
 
 function starter(): Project {
@@ -82,6 +85,8 @@ export function ProApp() {
   const media = useMemo(() => new MediaStore(), []);
   const clock = useMemo(() => new Clock(), []);
   const drawn = useMemo(() => new DrawnCache(1), []);
+  // Separated subjects' masks: outside the project (they can be tens of MB), kept per layer.
+  const subjects = useMemo(() => new SubjectStore(media), [media]);
   const studio = useStudio(starter);
   const { project, selectedLayer: layer } = studio;
   const [ready, setReady] = useState(false);
@@ -103,9 +108,41 @@ export function ProApp() {
   useEffect(() => media.subscribe(() => bumpMedia((n) => n + 1)), [media]);
   // Scripted checks in development poke at the studio through this.
   useEffect(() => {
-    if (import.meta.env.DEV) (window as unknown as { __pro: unknown }).__pro = { studio, media, clock };
+    if (import.meta.env.DEV) (window as unknown as { __pro: unknown }).__pro = { studio, media, clock, subjects };
   });
   useEffect(() => () => media.dispose(), [media]);
+  useEffect(() => () => subjects.dispose(), [subjects]);
+  // Undo / redo can remove a layer, switch its subject off or restore other settings: analyses that no
+  // longer fit stop (layers that analyse by themselves analyse again for the settings undo / redo lands on,
+  // below). Also keeps the store up with the canvas's length.
+  useEffect(() => subjects.sync(project), [project, subjects]);
+  // A longer canvas or a trim can show more of a clip than was analysed, and undo / redo can switch a
+  // subject on or land on other analysis settings (method, area, rate, track): layers that analyse by
+  // themselves (AI · fast, Classic) analyse again once the edit settles, as the same edit in the panel does
+  // (panel edits have started already). A Stop holds while the layer wants what it did when it was pressed.
+  const autoKeys = useRef<Map<string, string> | null>(null);
+  // Layers whose settings changed at any project change since the last check: a quick undo + redo (or
+  // Delete + undo) lands back on what the check saw, but sync / remove stopped its analysis on the way.
+  const seenKeys = useRef<Map<string, string> | null>(null);
+  const touched = useRef(new Set<string>());
+  // Just loaded (no history): nothing was edited, so only note the settings.
+  const loaded = studio.state.past.length === 0 && studio.state.future.length === 0;
+  // Masks saved before a reload land a while after the project: check again then.
+  const [restored, setRestored] = useState(0);
+  useEffect(() => {
+    const now = subjectKeys(subjects, project.layers);
+    const seen = seenKeys.current;
+    if (seen) for (const [id, key] of now) if (seen.get(id) !== key) touched.current.add(id);
+    seenKeys.current = now;
+    const t = setTimeout(() => {
+      const prev = loaded ? null : autoKeys.current;
+      const { keys, start } = autoAnalyses(subjects, project.layers, prev, touched.current);
+      touched.current.clear();
+      autoKeys.current = keys;
+      start.forEach((l) => startAnalysis(subjects, l, setToast));
+    }, 600);
+    return () => clearTimeout(t);
+  }, [project, subjects, loaded, restored]);
 
   useEffect(() => {
     if (!toast) return;
@@ -192,6 +229,7 @@ export function ProApp() {
   const applyTemplate = useCallback(
     (t: Template) => {
       const p = t.build();
+      subjects.clear();
       studio.load({ ...p, name: project.name === 'Untitled' ? t.name : project.name }, p.layers.at(-1)?.id ?? null);
       setModal(null);
       setTab('look');
@@ -199,7 +237,7 @@ export function ProApp() {
       clock.seek(0);
       clock.play();
     },
-    [studio, project.name, clock],
+    [studio, project.name, clock, subjects],
   );
 
   // ─── Start-up: restore the autosave, take over the classic site's picture ──
@@ -209,7 +247,13 @@ export function ProApp() {
     (async () => {
       const saved = await loadProject(media);
       if (!alive) return;
-      if (saved && saved.layers.length) studio.load(saved);
+      if (saved && saved.layers.length) {
+        studio.load(saved);
+        // Masks analysed before the reload come back from IndexedDB.
+        void subjects.restore(saved).then(() => {
+          if (alive) setRestored((n) => n + 1);
+        });
+      }
       const handed = takeHandoff();
       if (handed && handed.name !== 'pizza-sample.png') {
         const blob = await new Promise<Blob | null>((r) => handed.canvas.toBlob(r, 'image/png'));
@@ -273,8 +317,12 @@ export function ProApp() {
     };
     copy.effects = copy.effects.map((e) => ({ ...e, uid: uid('fx') }));
     copy.motion = copy.motion.map((m) => ({ ...m, uid: uid('mo') }));
+    // The copy starts with the original's masks when it has any. When those don't fit (the original was still
+    // being analysed, or its masks are out of date), the copy analyses by itself, like any layer switched on.
+    subjects.copy(layer.id, copy);
     studio.commit(addLayer(copy), undefined, copy.id);
-  }, [layer, media, studio]);
+    refreshSubject(subjects, copy, setToast);
+  }, [layer, media, studio, subjects]);
 
   // ─── Tracking ────────────────────────────────────────────────────────────
 
@@ -318,14 +366,17 @@ export function ProApp() {
 
   const remove = useCallback(() => {
     if (!layer) return;
+    // Its masks stay (undo may bring the layer back), but an analysis under way stops.
+    subjects.cancel(layer.id);
     studio.commit(removeLayer(layer.id), undefined, null);
     setTab('look');
-  }, [layer, studio]);
+  }, [layer, studio, subjects]);
 
   const newProjectAction = () => {
     if (!window.confirm('Start a new, empty project? This clears the current one (autosaved on this device).')) return;
     clearSavedProject();
     media.prune(new Set());
+    subjects.clear();
     studio.load(newProject());
     clock.pause();
     clock.seek(0);
@@ -497,7 +548,7 @@ export function ProApp() {
   }, [addFiles]);
 
   // A tab that doesn't apply to the current target falls back to Look.
-  const layerTabs: Tab[] = ['look', 'move', 'sound', '3d', 'track', 'layer', 'canvas'];
+  const layerTabs: Tab[] = ['look', 'move', 'sound', '3d', 'track', 'subject', 'layer', 'canvas'];
   const canvasTabs: Tab[] = ['look', 'finish', 'scene', 'canvas'];
   const activeTab: Tab = (layer ? layerTabs : canvasTabs).includes(tab) ? tab : 'look';
 
@@ -513,6 +564,7 @@ export function ProApp() {
         { tab: 'sound', label: 'Sound', icon: 'wave', live: layer.kind === 'video' && !layer.muted },
         { tab: '3d', label: '3D', icon: 'cube', live: layer.tiltX !== 0 || layer.tiltY !== 0 },
         { tab: 'track', label: 'Track', icon: 'target', live: !!layer.track?.data.length || !!layer.follow },
+        { tab: 'subject', label: 'Subject', icon: 'subject', live: !!layer.subject?.on },
         {
           tab: 'layer',
           label: 'Layer',
@@ -731,12 +783,23 @@ export function ProApp() {
           }}
         />
       )}
-      {pop === 'layers' && <LayersPanel studio={studio} onClose={() => setPop(null)} />}
+      {pop === 'layers' && (
+        <LayersPanel
+          studio={studio}
+          onClose={() => setPop(null)}
+          onRemove={(id) => {
+            // Its masks stay (undo may bring the layer back), but an analysis under way stops.
+            subjects.cancel(id);
+            studio.commit(removeLayer(id));
+          }}
+        />
+      )}
 
       <main className="stage-pro">
         <Viewport
           studio={studio}
           media={media}
+          subjects={subjects}
           clock={clock}
           drawn={drawn}
           zoom={zoom}
@@ -762,7 +825,13 @@ export function ProApp() {
           />
           <div className="inspector__scroll">
             {activeTab === 'look' && (
-              <LookPanel studio={studio} owner={layer?.id ?? null} toast={setToast} key={layer?.id ?? 'canvas'} />
+              <LookPanel
+                studio={studio}
+                owner={layer?.id ?? null}
+                toast={setToast}
+                onOpenSubject={() => openTab('subject')}
+                key={layer?.id ?? 'canvas'}
+              />
             )}
             {activeTab === 'move' && layer && <MovePanel studio={studio} layer={layer} />}
             {activeTab === 'sound' && layer && (
@@ -781,6 +850,19 @@ export function ProApp() {
                 }}
                 onAddLabel={addFollowLabel}
                 toast={setToast}
+                subjects={subjects}
+                onOpenSubject={() => openTab('subject')}
+                key={layer.id}
+              />
+            )}
+            {activeTab === 'subject' && layer && (
+              <SubjectPanel
+                studio={studio}
+                layer={layer}
+                media={media}
+                subjects={subjects}
+                toast={setToast}
+                onOpenTrack={() => openTab('track')}
                 key={layer.id}
               />
             )}
@@ -827,6 +909,7 @@ export function ProApp() {
         <ExportDialog
           project={project}
           media={media}
+          subjects={subjects}
           time={clock.time}
           onClose={() => setModal(null)}
           onDone={setToast}
@@ -925,7 +1008,15 @@ function DockButton({
   onClick: () => void;
 }) {
   return (
-    <button type="button" className={`dockbtn${on ? ' dockbtn--on' : ''}`} onClick={onClick} aria-pressed={on}>
+    // Labelled for when a narrow stage hides the captions.
+    <button
+      type="button"
+      className={`dockbtn${on ? ' dockbtn--on' : ''}`}
+      onClick={onClick}
+      aria-pressed={on}
+      aria-label={label}
+      title={label}
+    >
       <span className="dockbtn__box">
         <Icon name={icon} size={18} />
         <span className={`dockbtn__led${live ? ' dockbtn__led--live' : ''}`} />

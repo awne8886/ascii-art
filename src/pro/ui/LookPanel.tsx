@@ -10,33 +10,55 @@ import {
   type ParamValue,
   type ParamValues,
 } from '../effects/types';
-import { newEffect, uid, type Appears, type EffectInstance, type Modulation } from '../model';
-import { effectsOf, setEffects, updateEffect, type Studio } from '../store';
+import {
+  allows,
+  lookPart,
+  newEffect,
+  SEPARABLE_KINDS,
+  uid,
+  type Appears,
+  type EffectInstance,
+  type Modulation,
+  type SubjectSettings,
+} from '../model';
+import { effectsOf, setEffects, updateEffect, updateLayer, type Studio } from '../store';
 import { loadLooks, lookName, saveLooks, type SavedLook } from '../storage';
 import { useEffectThumb, useStackThumb } from '../thumbs';
 import { ColorRow, Group, NumberBox, Segmented, Select, Slider, Switch } from './controls';
 import { Icon } from './icons';
+import { withSubject } from './SubjectPanel';
 
 const CAT_LABEL = new Map(CATEGORIES.map((c) => [c.id, c.label]));
 
-const APPEARS: ReadonlyArray<{ value: Appears; label: string }> = [
-  { value: 0, label: 'Whole layer' },
+/** Where a look shows; `short` fits the Mask group's four columns. */
+const APPEARS: ReadonlyArray<{ value: Appears; label: string; short?: string }> = [
+  { value: 0, label: 'Whole layer', short: 'All' },
   { value: 1, label: 'Brights' },
   { value: 2, label: 'Darks' },
   { value: 3, label: 'Centre' },
   { value: 4, label: 'Edges' },
-  { value: 5, label: 'Tracked object' },
+  { value: 5, label: 'Tracked object', short: 'Object' },
+  { value: 6, label: 'Subject' },
+  { value: 7, label: 'Background' },
 ];
+
+const APPEARS_SEG = APPEARS.map((a) => ({ value: a.value, label: a.short ?? a.label, title: a.label }));
 
 interface Props {
   studio: Studio;
   /** Layer id, or null for the whole canvas. */
   owner: string | null;
   toast: (msg: string) => void;
+  /** Opens the layer's Subject tab (looks that appear on the subject or the background need it). */
+  onOpenSubject?: () => void;
 }
 
-export function LookPanel({ studio, owner, toast }: Props) {
+export function LookPanel({ studio, owner, toast, onOpenSubject }: Props) {
   const stack = effectsOf(studio.project, owner);
+  // Looks on the subject or the background need a separated subject: the layer's own, or (canvas) any layer's.
+  const ownerLayer = owner === null ? undefined : studio.project.layers.find((l) => l.id === owner);
+  const separable = !ownerLayer || SEPARABLE_KINDS.includes(ownerLayer.kind);
+  const separated = owner === null ? studio.project.layers.some((l) => l.subject?.on) : !!ownerLayer?.subject?.on;
   const [tab, setTab] = useState<'looks' | 'saved'>('looks');
   const [adding, setAdding] = useState(stack.length === 0);
   const [active, setActive] = useState<string | null>(stack.at(-1)?.uid ?? null);
@@ -143,7 +165,17 @@ export function LookPanel({ studio, owner, toast }: Props) {
       {showLibrary && <Library onApply={apply} onCancel={stack.length ? () => setAdding(false) : undefined} />}
 
       {tab === 'looks' && !showLibrary && current && (
-        <Editor studio={studio} owner={owner} fx={current} onSave={saveCurrent} key={current.uid} />
+        <Editor
+          studio={studio}
+          owner={owner}
+          fx={current}
+          onSave={saveCurrent}
+          separated={separated}
+          separable={separable}
+          subject={ownerLayer?.subject}
+          onOpenSubject={onOpenSubject}
+          key={current.uid}
+        />
       )}
     </div>
   );
@@ -355,15 +387,35 @@ function Editor({
   owner,
   fx,
   onSave,
+  separated,
+  separable,
+  subject,
+  onOpenSubject,
 }: {
   studio: Studio;
   owner: string | null;
   fx: EffectInstance;
   onSave: () => void;
+  /** A subject is separated for this stack to go by (appears in subject / background). */
+  separated: boolean;
+  /** The owner can be separated at all (type and shapes can't; the canvas goes by its layers). */
+  separable: boolean;
+  /** The owner layer's subject settings (its composition), if it's a layer. */
+  subject?: SubjectSettings;
+  onOpenSubject?: () => void;
 }) {
   const def = effectById(fx.effectId);
   const set = (patch: Partial<EffectInstance>, coalesce?: string) =>
     studio.commit(updateEffect(owner, fx.uid, patch), coalesce);
+  // Kept to a part its layer's composition (Subject tab) leaves out: it doesn't show.
+  const part = lookPart(fx);
+  const hidden =
+    owner !== null &&
+    separated &&
+    fx.enabled &&
+    part !== null &&
+    !!subject &&
+    !(allows(subject.looks, part) && allows(subject.show, part));
   if (!def) return <p className="muted small pad">This look isn’t available any more.</p>;
   const index = EFFECTS.indexOf(def);
   const swap = (d: number) => {
@@ -469,19 +521,82 @@ function Editor({
       </div>
 
       <Group
+        // Subject or background picked (up in "Appears in" too) with nothing separated, or with a composition that
+        // leaves that part out: open, to say so.
+        reveal={fx.appears >= 6 && (!separated || hidden)}
         title="Mask"
         icon="mask"
         defaultOpen={fx.appears !== 0}
         summary={APPEARS.find((a) => a.value === fx.appears)?.label}
       >
-        <Segmented value={fx.appears} cols={3} options={APPEARS} onChange={(v) => set({ appears: v })} />
-        <Slider
-          label="Softness"
-          value={fx.appearsSoft}
-          min={0}
-          max={0.5}
-          onChange={(v) => set({ appearsSoft: v }, `soft:${fx.uid}`)}
-        />
+        <div className="maskseg">
+          <Segmented value={fx.appears} cols={4} options={APPEARS_SEG} onChange={(v) => set({ appears: v })} />
+        </div>
+        {fx.appears >= 6 ? (
+          separated ? (
+            owner === null ? (
+              <p className="muted small">
+                On the canvas, the subjects of every separated layer count; layers above (blended Normal) cover the ones
+                below.
+              </p>
+            ) : (
+              hidden &&
+              subject &&
+              part && (
+                <div className="subjnote">
+                  <p className="muted small">
+                    This layer’s composition (Subject tab){' '}
+                    {allows(subject.show, part) ? `keeps its looks off the ${part}` : `hides the ${part}`}, so this look
+                    doesn’t show.
+                  </p>
+                  <div className="btnrow">
+                    <button
+                      type="button"
+                      className="pbtn pbtn--small"
+                      onClick={() =>
+                        studio.commit(
+                          updateLayer(owner, (l) =>
+                            withSubject(l, { looks: 'all', show: allows(subject.show, part) ? subject.show : 'all' }),
+                          ),
+                        )
+                      }
+                    >
+                      {allows(subject.show, part) ? 'Looks on: Everything' : 'Show everything'}
+                    </button>
+                    {onOpenSubject && (
+                      <button type="button" className="pbtn pbtn--small" onClick={onOpenSubject}>
+                        <Icon name="subject" size={13} /> Subject
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            )
+          ) : (
+            <div className="subjnote">
+              <p className="muted small">
+                {owner === null
+                  ? 'This needs a separated subject: switch it on in a layer’s Subject tab.'
+                  : !separable
+                    ? 'Type and shapes have no background to separate. Put this look on the canvas instead: there it can appear on just the subjects (or the background) of separated videos, pictures or the webcam.'
+                    : 'This needs the layer’s subject separated from its background: switch it on in the Subject tab.'}
+              </p>
+              {owner !== null && separable && onOpenSubject && (
+                <button type="button" className="pbtn pbtn--small" onClick={onOpenSubject}>
+                  <Icon name="subject" size={13} /> Subject
+                </button>
+              )}
+            </div>
+          )
+        ) : (
+          <Slider
+            label="Softness"
+            value={fx.appearsSoft}
+            min={0}
+            max={0.5}
+            onChange={(v) => set({ appearsSoft: v }, `soft:${fx.uid}`)}
+          />
+        )}
         <Switch label="Invert" checked={fx.appearsInvert} onChange={(v) => set({ appearsInvert: v })} />
       </Group>
 

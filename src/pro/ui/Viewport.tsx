@@ -6,6 +6,7 @@ import { ProRenderer } from '../gl/renderer';
 import { type MediaStore } from '../media';
 import { layerActive, mediaTime, trackAt, type Layer, type Project } from '../model';
 import { updateLayer, type Studio } from '../store';
+import { type MaskSource } from '../subject/types';
 import { Icon } from './icons';
 import { type SceneOptions } from './panels';
 
@@ -14,6 +15,8 @@ export type Zoom = 'fit' | number;
 interface Props {
   studio: Studio;
   media: MediaStore;
+  /** Separated subjects' masks, for the preview. */
+  subjects: MaskSource;
   clock: Clock;
   drawn: DrawnCache;
   zoom: Zoom;
@@ -36,6 +39,7 @@ const DOCK_SPACE = 118;
 export function Viewport({
   studio,
   media,
+  subjects,
   clock,
   drawn,
   zoom,
@@ -75,10 +79,10 @@ export function Viewport({
   const top = Math.round(Math.max(PAD, (stageH - DOCK_SPACE - dispH) / 2 + 10));
 
   // Everything the render loop needs, always current.
-  const live = useRef({ project, soundOn, scene, dispW, dispH, version: 0 });
+  const live = useRef({ project, subjects, soundOn, scene, dispW, dispH, version: 0 });
   useEffect(() => {
-    live.current = { project, soundOn, scene, dispW, dispH, version: live.current.version + 1 };
-  }, [project, soundOn, scene, dispW, dispH]);
+    live.current = { project, subjects, soundOn, scene, dispW, dispH, version: live.current.version + 1 };
+  }, [project, subjects, soundOn, scene, dispW, dispH]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -121,7 +125,8 @@ export function Viewport({
       syncVideos(p, t, clock.playing, media, s.soundOn);
       const liveCam = p.layers.some((l) => l.kind === 'webcam' && layerActive(l, t));
       const seqs = p.layers.map((l) => media.get(l.mediaId)?.seq ?? 0).join(',');
-      const next = `${t}|${s.dispW}x${s.dispH}|${seqs}|${s.version}`;
+      // Masks arriving (or re-analysed) redraw a paused preview too.
+      const next = `${t}|${s.dispW}x${s.dispH}|${seqs}|${s.version}|${s.subjects.version}`;
       if (!clock.playing && !liveCam && next === sig) return;
       sig = next;
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -139,6 +144,7 @@ export function Viewport({
           height: h,
           frameOf: (l) => previewFrame(l, p, t, media, drawn, clock.playing),
           sound: (l) => soundLevel(p, l, t, media),
+          maskOf: (l) => s.subjects.maskAt(l, p, t),
         });
       } catch (e) {
         console.error(e);

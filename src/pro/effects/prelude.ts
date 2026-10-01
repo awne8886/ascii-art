@@ -22,6 +22,13 @@ uniform float u_duration;      // timeline length, seconds (for seamless loops)
 uniform float u_frame;         // frame number
 uniform float u_seed;          // 0–1, fixed per effect instance
 uniform float u_unit;          // output px per canvas px: multiply pixel-sized params by this
+uniform sampler2D u_subjA;     // subject masks (red channel 0–1; see subjectAt())
+uniform sampler2D u_subjB;
+uniform vec4 u_subjRectA;      // where each sits in the layer's uv: x, y, w, h
+uniform vec4 u_subjRectB;
+uniform float u_subjMix;       // 0 → A, 1 → B
+uniform float u_subjOutside;   // subject value outside the rects
+uniform float u_subjOn;        // 0: no mask
 
 #define PI 3.14159265359
 #define TAU 6.28318530718
@@ -39,6 +46,29 @@ float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 float lumaAt(vec2 uv) { return luma(texture(u_src, uv).rgb); }
 vec3 saturation(vec3 c, float s) { return mix(vec3(luma(c)), c, s); }
 vec3 contrast(vec3 c, float k) { return (c - 0.5) * k + 0.5; }
+
+// ── Subject ────────────────────────────────────────────────────────────────
+
+/** One mask's subject value at uv; it covers only its rect, fading to u_subjOutside over its outermost texel. */
+float subjectIn(sampler2D m, vec4 r, vec2 uv) {
+  vec2 p = (uv - r.xy) / max(r.zw, vec2(1e-6));
+  // Level 0 explicitly: no derivatives needed, so callers may sample it anywhere (loops, branches).
+  float v = textureLod(m, clamp(p, 0.0, 1.0), 0.0).r;
+  vec2 size = vec2(textureSize(m, 0));
+  // Sides on the layer's own border don't fade (nothing lies beyond them): no seam where a subject meets the frame.
+  vec2 lo = mix(p * size + 0.5, vec2(1.0), step(r.xy, vec2(1e-4)));
+  vec2 hi = mix((1.0 - p) * size + 0.5, vec2(1.0), step(vec2(1.0 - 1e-4), r.xy + r.zw));
+  vec2 e = min(lo, hi);
+  return mix(u_subjOutside, v, clamp(min(e.x, e.y), 0.0, 1.0));
+}
+
+/** How much of uv is the layer's subject (0 background – 1 subject); 1 everywhere when it has no mask. */
+float subjectAt(vec2 uv) {
+  if (u_subjOn < 0.5) return 1.0;
+  if (u_subjMix <= 0.0) return subjectIn(u_subjA, u_subjRectA, uv);
+  if (u_subjMix >= 1.0) return subjectIn(u_subjB, u_subjRectB, uv);
+  return mix(subjectIn(u_subjA, u_subjRectA, uv), subjectIn(u_subjB, u_subjRectB, uv), u_subjMix);
+}
 
 // ── Grids ──────────────────────────────────────────────────────────────────
 
@@ -177,7 +207,7 @@ vec3 blendRGB(vec3 b, vec3 s, int mode) {
 export const EFFECT_MAIN = /* glsl */ `
 uniform float u_strength;
 uniform float u_blend;
-uniform float u_appears;       // 0 everywhere, 1 brights, 2 darks, 3 centre, 4 edges, 5 tracked object
+uniform float u_appears;       // 0 everywhere, 1 brights, 2 darks, 3 centre, 4 edges, 5 tracked object, 6 subject, 7 background
 uniform vec4 u_track;          // tracked object: centre x, y, width, height in uv (width 0: none)
 uniform float u_appearsSoft;
 uniform float u_appearsInvert;
@@ -199,6 +229,10 @@ float appearsIn(vec2 uv, vec4 base) {
     vec2 q = abs(uv - u_track.xy) / max(u_track.zw * 0.5, vec2(1e-4));
     float d = length(max(q - 0.7, 0.0)) + min(max(q.x, q.y) - 0.7, 0.0) + 0.7;
     m = 1.0 - smoothstep(1.0 - s, 1.0 + s, d);
+  } else if (a == 6 || a == 7) {
+    if (u_subjOn < 0.5) return u_appearsInvert > 0.5 ? 0.0 : 1.0;
+    // The mask as it is: its edge softness is set with the subject, so appearsSoft doesn't apply.
+    m = a == 6 ? subjectAt(uv) : 1.0 - subjectAt(uv);
   } else {
     m = smoothstep(0.1, 0.1 + s, length(sobel(uv, 1.5)));
   }

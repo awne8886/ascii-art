@@ -236,6 +236,12 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   back: <path d="M10 6l-6 6 6 6M4 12h16" />,
+  subject: (
+    <>
+      <circle cx="12" cy="8" r="3.5" />
+      <path d="M5 20.5c0-4.1 3.1-7 7-7s7 2.9 7 7" />
+    </>
+  ),
 };
 
 export type IconName = keyof typeof PATHS;

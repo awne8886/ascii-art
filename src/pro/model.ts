@@ -1,3 +1,4 @@
+import { type SegmentMethod } from '../settings';
 import { effectById } from './effects/registry';
 import { defaultParams, presetParams, type ParamValues } from './effects/types';
 
@@ -13,8 +14,11 @@ import { defaultParams, presetParams, type ParamValues } from './effects/types';
 /** Index into BLEND_MODES. */
 export type BlendMode = number;
 
-/** Where an effect shows: 0 everywhere, 1 brights, 2 darks, 3 centre, 4 edges, 5 the tracked object. */
-export type Appears = 0 | 1 | 2 | 3 | 4 | 5;
+/**
+ * Where an effect shows: 0 everywhere, 1 brights, 2 darks, 3 centre, 4 edges, 5 the tracked object,
+ * 6 the subject, 7 the background (6 and 7 need the layer's subject separated; on the canvas, any layer's).
+ */
+export type Appears = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 /**
  * An object followed through a layer's video. Positions are in the layer's
@@ -32,6 +36,142 @@ export interface Track {
   fps: number;
   /** Per sample: centre x, centre y, width, height, confidence (0–1). Empty until tracked. */
   data: number[];
+}
+
+/** Part of a layer's picture once its subject is separated from the background. */
+export type SubjectPart = 'all' | 'subject' | 'background';
+
+/** Which background of the looks is dropped, so only their marks sit on the picture. */
+export type SubjectKey = 'off' | 'dark' | 'light';
+
+/**
+ * Subject / background separation of a layer's picture (videos, the sample
+ * clip, pictures, the webcam). Masks are analysed ahead of time (every
+ * `rate`-th of a second of the clip; live for the webcam) and live outside
+ * the project (see `subject/`); these are the settings.
+ */
+export interface SubjectSettings {
+  on: boolean;
+  method: SegmentMethod;
+  /** Separate across the whole frame, or only the layer's tracked object (segmented in a window around it). */
+  area: 'frame' | 'tracked';
+  /** What of the layer shows: everything, only the subject (background see-through), or only the background. */
+  show: SubjectPart;
+  /** Where the layer's looks go; elsewhere the untouched picture shows. */
+  looks: SubjectPart;
+  /** How the looks sit on the untouched picture in their area (index into BLEND_MODES). */
+  looksBlend: BlendMode;
+  /**
+   * Drop the looks' own background in their area, so only their marks (characters, dots, lines) sit on
+   * the picture: 'dark' keys out dark backgrounds (most type looks), 'light' keys out light ones
+   * (paper-like looks).
+   */
+  looksKey: SubjectKey;
+  /** How much of the looks shows in their area, 0–1. */
+  looksMix: number;
+  /** Where subject turns into background, 0–1. */
+  threshold: number;
+  /** Edge softness, 0–1. */
+  softness: number;
+  /** Grow (+) or shrink (−) the subject, in % of the picture's longer side (−5…5). */
+  expand: number;
+  /** Swap subject and background. */
+  invert: boolean;
+  /** Blend each mask with its neighbours in time: steadier edges, less flicker. */
+  steady: boolean;
+  /** The background before the looks: brightness (1 as is, 0–2), blur (0–1), saturation (1 as is, 0–2). */
+  bgBrightness: number;
+  bgBlur: number;
+  bgSaturation: number;
+  /** Masks analysed per second of media (videos and the sample clip); in between, neighbouring masks blend. */
+  rate: number;
+}
+
+/** Layer kinds whose picture can be separated into subject and background. */
+export const SEPARABLE_KINDS: readonly LayerKind[] = ['video', 'sample', 'image', 'webcam'];
+
+export const SUBJECT_RATES = [5, 10, 15, 30] as const;
+
+export function defaultSubject(): SubjectSettings {
+  return {
+    on: false,
+    method: 'ai-fast',
+    area: 'frame',
+    show: 'all',
+    looks: 'subject',
+    looksBlend: 0,
+    looksKey: 'off',
+    looksMix: 1,
+    threshold: 0.5,
+    softness: 0.15,
+    expand: 0,
+    invert: false,
+    steady: true,
+    bgBrightness: 1,
+    bgBlur: 0,
+    bgSaturation: 1,
+    rate: 10,
+  };
+}
+
+/** The part a look's own Mask (Appears in: subject / background, maybe inverted) keeps it to, or null. */
+export function lookPart(e: Pick<EffectInstance, 'appears' | 'appearsInvert'>): 'subject' | 'background' | null {
+  if (e.appears !== 6 && e.appears !== 7) return null;
+  return (e.appears === 6) !== e.appearsInvert ? 'subject' : 'background';
+}
+
+/** A composition's show or looks setting takes in that part. */
+export const allows = (p: SubjectPart, part: 'subject' | 'background') => p === 'all' || p === part;
+
+/** A look's colour settings that are its own background (the key drops it). */
+const LOOK_BACKGROUNDS = ['paper', 'bg', 'board', 'fabric', 'sky'];
+/** Looks that repaint the whole frame on their own black and have no colour setting for it: the looks below don't show through. */
+const BLACK_GROUND = ['matrix-rain', 'retro-matrix', 'pixel-dither-glow'];
+/** Blend modes that leave what's below as it is under black and only brighten it elsewhere (Screen, Add, Lighten). */
+const BLACK_SHOWS_THROUGH = [2, 4, 7];
+
+/**
+ * The looks' own background colour (0–1 RGB), as the key sees it: that of
+ * the first look on, from the top, that has its own background and shows in
+ * the composition `s` (a look its Mask keeps to a part the composition
+ * leaves out never reaches the key). Looks without one (VHS, CRT, Glitch…)
+ * are filters: the background of the looks below shows through them; those
+ * on their own black (BLACK_GROUND) give black, unless blended so that black
+ * leaves what's below as it is (Screen, Add…). Null when no look has one.
+ */
+export function looksPaper(
+  effects: readonly EffectInstance[],
+  s?: Pick<SubjectSettings, 'show' | 'looks'>,
+): [number, number, number] | null {
+  for (let i = effects.length - 1; i >= 0; i--) {
+    const e = effects[i]!;
+    const def = e.enabled && e.strength > 0 ? effectById(e.effectId) : undefined;
+    if (!def) continue;
+    const part = lookPart(e);
+    if (s && part !== null && !(allows(s.looks, part) && allows(s.show, part))) continue;
+    const p = def.params.find((q) => q.type === 'color' && LOOK_BACKGROUNDS.includes(q.key));
+    if (!p && BLACK_GROUND.includes(def.id) && !BLACK_SHOWS_THROUGH.includes(e.blend)) return [0, 0, 0];
+    // A filter over the looks below: their background shows through it.
+    if (!p) continue;
+    const hex = String(e.params[p.key] ?? p.default);
+    if (!/^#[0-9a-f]{6}$/i.test(hex)) return null;
+    const n = parseInt(hex.slice(1), 16);
+    return [(n >> 16) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
+  return null;
+}
+
+/**
+ * The key that drops the looks' own background (see looksPaper): 'light'
+ * when it's light paper, else 'dark' (also with no background known).
+ */
+export function looksKeyFor(
+  effects: readonly EffectInstance[],
+  s?: Pick<SubjectSettings, 'show' | 'looks'>,
+): 'dark' | 'light' {
+  const c = looksPaper(effects, s);
+  if (!c) return 'dark';
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2] > 0.5 ? 'light' : 'dark';
 }
 
 /** A layer riding along with another layer's tracked object. */
@@ -221,6 +361,7 @@ export interface Layer {
   finish: LayerFinish;
   track?: Track;
   follow?: Follow;
+  subject?: SubjectSettings;
 }
 
 export type Background = 'transparent' | 'light' | 'dark' | 'color';

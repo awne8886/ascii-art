@@ -3210,3 +3210,208 @@ kbd {
 .trackprogress .bar {
   flex: 1;
 }
+
+/* Subject */
+
+.subjpresets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.subjpreset {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 12px 8px 8px;
+  border: 1px solid var(--p-line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #13110e, #0f0e0b);
+  color: var(--p-label);
+  text-align: left;
+}
+
+.subjpreset:hover {
+  border-color: rgba(255, 197, 61, 0.45);
+}
+
+.subjpreset--on {
+  border-color: rgba(255, 197, 61, 0.6);
+  background: var(--p-well);
+  box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.9);
+}
+
+.subjpreset__text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.subjpreset__name {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.subjpreset--on .subjpreset__name {
+  color: var(--cheese-hi);
+}
+
+.subjpreset__desc {
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.subjglyph {
+  flex: none;
+  width: 46px;
+  height: 32px;
+  border: 1px solid var(--p-line-2);
+  border-radius: 6px;
+  background: #000;
+}
+
+.subjglyph__bg {
+  fill: #3a342a;
+}
+
+.subjglyph__fg {
+  fill: var(--p-label);
+}
+
+.subjglyph__under {
+  fill: #6b604c;
+}
+
+.subjglyph__ink {
+  fill: #17140f;
+}
+
+.subjglyph__dot {
+  fill: var(--cheese);
+}
+
+.subjglyph__clear-a {
+  fill: #1c1a15;
+}
+
+.subjglyph__clear-b {
+  fill: #0a0908;
+}
+
+/* A hint with the button that acts on it. */
+.subjnote {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px dashed var(--p-line-2);
+  border-radius: 10px;
+}
+
+.subjline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--p-label);
+}
+
+.subjerror {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 90, 60, 0.5);
+  border-radius: 10px;
+  background: rgba(255, 90, 60, 0.08);
+  color: var(--bad);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* The Mask group's eight places, in four columns. */
+.maskseg {
+  container-type: inline-size;
+}
+
+.maskseg .pseg__opt {
+  padding: 0 4px;
+  letter-spacing: 0.06em;
+}
+
+@container (max-width: 320px) {
+  .maskseg .pseg__opt {
+    font-size: 9.5px !important;
+    letter-spacing: 0.02em;
+  }
+}
+
+.export__warn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0 0;
+  padding: 10px 12px 10px 28px;
+  border: 1px solid rgba(255, 197, 61, 0.4);
+  border-radius: 10px;
+  background: rgba(255, 197, 61, 0.06);
+  color: var(--cheese-hi);
+  font-size: 12.5px;
+}
+
+/* The dock on a narrow stage (the inspector beside it, or a phone): first
+   without the layer's name and with tighter captions, then icons only. */
+@container (max-width: 700px) {
+  .dock__target {
+    display: none;
+  }
+
+  .dockbtn__box {
+    width: 40px;
+    height: 36px;
+  }
+
+  .dockbtn__label {
+    letter-spacing: 0.06em;
+  }
+}
+
+@container (max-width: 500px) {
+  .dock {
+    gap: 4px;
+    padding: 6px;
+  }
+
+  .dock__grip,
+  .dockbtn__label {
+    display: none;
+  }
+
+  .dock__sep {
+    height: 28px;
+    margin: 0 2px;
+  }
+
+  .dockbtn {
+    padding: 0;
+  }
+
+  .dockbtn__box {
+    width: 32px;
+    height: 34px;
+    border-radius: 9px;
+  }
+
+  .dockbtn__led {
+    top: 4px;
+    right: 4px;
+  }
+}

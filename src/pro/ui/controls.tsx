@@ -301,6 +301,7 @@ export function Group({
   children,
   defaultOpen = true,
   aside,
+  reveal = false,
 }: {
   title: string;
   icon?: IconName;
@@ -308,8 +309,15 @@ export function Group({
   children: ReactNode;
   defaultOpen?: boolean;
   aside?: ReactNode;
+  /** Opens the group each time this turns true (something inside needs seeing), without remounting what's in it. */
+  reveal?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const [revealed, setRevealed] = useState(reveal);
+  if (reveal !== revealed) {
+    setRevealed(reveal);
+    if (reveal) setOpen(true);
+  }
   return (
     <section className={`pgroup${open ? ' pgroup--open' : ''}`}>
       <div className="pgroup__head">

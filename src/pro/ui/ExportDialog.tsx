@@ -6,14 +6,20 @@ import {
   type ExportOptions,
   type ExportProgress,
 } from '../export/exporter';
+import { layerMediaDuration } from '../frames';
 import { type MediaStore } from '../media';
-import { type Project } from '../model';
+import { layerActive, type Layer, type Project } from '../model';
+import { analysisRange } from '../subject/masks';
+import { type SubjectStore } from '../subject/store';
 import { ColorRow } from './controls';
 import { Icon, type IconName } from './icons';
+import { useSubjectsVersion } from './SubjectPanel';
 
 interface Props {
   project: Project;
   media: MediaStore;
+  /** Separated subjects: every exported frame gets its own masks. */
+  subjects: SubjectStore;
   time: number;
   onClose: () => void;
   onDone: (msg: string) => void;
@@ -48,7 +54,57 @@ function mb(bytes: number): string {
   return bytes > 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.ceil(bytes / 1e3)} KB`;
 }
 
-export function ExportDialog({ project, media, time, onClose, onDone }: Props) {
+/**
+ * Layers in the export whose subject is switched on but has no masks that
+ * fit its settings: with none to draw yet (not analysed, still analysing, or
+ * failed) it exports as if separation were off; with masks made for older
+ * settings (analysing again, failed again, or out of date) it exports with
+ * those. Masks cover what shows on the canvas, so an export running past its
+ * end (`end`, in seconds) holds the last one there. All worth knowing before
+ * a long render.
+ */
+function subjectWarnings(
+  project: Project,
+  subjects: SubjectStore,
+  media: MediaStore,
+  inExport: (l: Layer) => boolean,
+  end: number,
+): string[] {
+  const out: string[] = [];
+  const canvasEnd = project.canvas.duration;
+  for (const l of project.layers) {
+    if (!l.subject?.on || !inExport(l)) continue;
+    const info = subjects.info(l);
+    const d = end > canvasEnd + 1e-3 ? layerMediaDuration(l, media) : null;
+    if (d && info.frames && analysisRange(l, d, end).to > info.to + 1e-3) {
+      out.push(
+        `${l.name}: subject analysed for the canvas’s ${Math.round(canvasEnd * 10) / 10} s — past that, its last mask holds (lengthen the canvas and analyse again to separate more)`,
+      );
+    }
+    if ((info.status === 'running' || info.status === 'error' || info.status === 'stale') && info.frames) {
+      const why =
+        info.status === 'running'
+          ? 'still being analysed again'
+          : info.status === 'error'
+            ? 'couldn’t be analysed again'
+            : info.reason === 'range'
+              ? 'analysed for less of the clip than shows now (there, its nearest mask holds)'
+              : 'settings changed since the last analysis';
+      out.push(`${l.name}: subject ${why} — it exports with the masks from before`);
+    } else if (info.status === 'none' || info.status === 'running' || info.status === 'error') {
+      const pct = info.status === 'running' ? ` (${Math.round((info.job?.progress ?? 0) * 100)}% analysed)` : '';
+      out.push(`${l.name}: subject not separated yet${pct} — it exports without separation`);
+    }
+  }
+  return out;
+}
+
+/** The warnings, not counting an analysis getting on (its percentage). */
+function gist(warnings: string[]): string {
+  return warnings.map((w) => w.replace(/ \(\d+% analysed\)/, '')).join('\n');
+}
+
+export function ExportDialog({ project, media, subjects, time, onClose, onDone }: Props) {
   const c = project.canvas;
   const hasSound = project.layers.some((l) => l.kind === 'video' && !l.muted);
   const [format, setFormat] = useState<ExportFormat>('mp4');
@@ -63,6 +119,8 @@ export function ExportDialog({ project, media, time, onClose, onDone }: Props) {
   const [progress, setProgress] = useState<ExportProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
+  /** The subject warnings when Export was pressed: the file keeps the masks it had then. */
+  const [pressed, setPressed] = useState<string[] | null>(null);
   const abort = useRef<AbortController | null>(null);
 
   const video = format === 'mp4' || format === 'webm';
@@ -84,6 +142,20 @@ export function ExportDialog({ project, media, time, onClose, onDone }: Props) {
     [format, w, h, duration, fps, blur, bg, custom, time, sound, video],
   );
 
+  useSubjectsVersion(subjects);
+  const warningsNow = () =>
+    subjectWarnings(
+      project,
+      subjects,
+      media,
+      (l) => (format === 'png' ? layerActive(l, time) : l.visible && l.start < duration && l.start + l.length > 0),
+      format === 'png' ? 0 : duration,
+    );
+  const warnings = warningsNow();
+  // While it renders, what held when Export was pressed (an analysis landing meanwhile isn't in the file).
+  const shown = progress && pressed ? pressed : warnings;
+  const changed = !!progress && !!pressed && gist(pressed) !== gist(warnings);
+
   useEffect(() => () => abort.current?.abort(), []);
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -98,16 +170,22 @@ export function ExportDialog({ project, media, time, onClose, onDone }: Props) {
     const ctrl = new AbortController();
     abort.current = ctrl;
     setProgress({ phase: 'prepare', done: 0, total: frames });
+    setPressed(warnings);
     try {
-      const r = await exportProject(project, media, opts, setProgress, ctrl.signal);
+      // The masks as they are now: an analysis landing mid-export doesn't change the file partway through.
+      const r = await exportProject(project, media, opts, setProgress, ctrl.signal, subjects.snapshot());
       download(r.blob, r.name);
-      onDone(`Exported ${r.name} (${mb(r.blob.size)}).`);
+      const later = gist(warningsNow()) !== gist(warnings);
+      onDone(
+        `Exported ${r.name} (${mb(r.blob.size)}).${later ? ' The subject analysis changed while it rendered: export again to include it.' : ''}`,
+      );
       onClose();
     } catch (e) {
       if ((e as Error).name === 'AbortError') setError('Export cancelled.');
       else setError(e instanceof Error ? e.message : String(e));
     } finally {
       setProgress(null);
+      setPressed(null);
       abort.current = null;
     }
   };
@@ -121,7 +199,7 @@ export function ExportDialog({ project, media, time, onClose, onDone }: Props) {
         width: Math.round(w * Math.min(1, 640 / w)),
         height: Math.round(h * Math.min(1, 640 / w)),
       };
-      const r = await exportProject(project, media, small, () => {}, new AbortController().signal);
+      const r = await exportProject(project, media, small, () => {}, new AbortController().signal, subjects.snapshot());
       setPreview((old) => {
         if (old) URL.revokeObjectURL(old);
         return URL.createObjectURL(r.blob);
@@ -308,6 +386,19 @@ export function ExportDialog({ project, media, time, onClose, onDone }: Props) {
           <p className="export__error" role="alert">
             {error}
           </p>
+        )}
+        {(shown.length > 0 || changed) && (
+          <ul className="export__warn">
+            {shown.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+            {changed && (
+              <li>
+                Subject analysis changed during the export — this file keeps what it had when you pressed Export; export
+                again to include it.
+              </li>
+            )}
+          </ul>
         )}
 
         <div className="export__foot">
