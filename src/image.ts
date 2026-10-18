@@ -29,7 +29,6 @@ function draw(source: CanvasImageSource, sw: number, sh: number, max: number): H
   canvas.height = h;
   const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
   ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'auto';
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(source, 0, 0, w, h);
   return canvas;
