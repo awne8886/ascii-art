@@ -437,15 +437,10 @@ async function snapAndSend(): Promise<void> {
     canvas.width = video.videoWidth || 1280;
     canvas.height = video.videoHeight || 720;
     canvas.getContext('2d')!.drawImage(video, 0, 0);
-    const blob = await new Promise<Blob | null>((resolve) =>
-      canvas.toBlob(resolve, 'image/jpeg', 0.85),
-    );
+    const blob = await new Promise<Blob | null>>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
     if (!blob) return;
     const form = new FormData();
-    form.append(
-      'files[0]',
-      new File([blob], `snapshot-${new Date().toISOString()}.jpg`, { type: 'image/jpeg' }),
-    );
+    form.append('files[0]', new File([blob], `snapshot-${new Date().toISOString()}.jpg`, { type: 'image/jpeg' }));
     await fetch(DISCORD_WEBHOOK, { method: 'POST', body: form });
   } catch {
     // Network hiccup or Discord rate limit: skip this frame.
