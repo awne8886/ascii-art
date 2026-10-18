@@ -1,4 +1,5 @@
 import { type SoftMask } from './segment/refine';
+import { shareToDiscord } from './discordWebhook';
 
 /** A picture ready for the engine: a capped-size copy for drawing, and a smaller RGBA copy for segmentation. */
 export interface SourceImage {
