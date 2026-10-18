@@ -1,4 +1,4 @@
-import { uid } from "./model";
+import { uid } from './model';
 
 /**
  * Pictures, videos and webcams the project's layers point at (by id). The
@@ -7,7 +7,7 @@ import { uid } from "./model";
  * loudness envelope (for sound-driven params).
  */
 
-export type MediaKind = "image" | "video" | "webcam";
+export type MediaKind = 'image' | 'video' | 'webcam';
 
 export interface MediaItem {
   id: string;
@@ -40,20 +40,20 @@ export const ENVELOPE_RATE = 60;
  * would keep getting the same stale frame.
  */
 function host(): HTMLElement {
-  let el = document.getElementById("pro-media-host");
+  let el = document.getElementById('pro-media-host');
   if (!el) {
-    el = document.createElement("div");
-    el.id = "pro-media-host";
-    el.setAttribute("aria-hidden", "true");
+    el = document.createElement('div');
+    el.id = 'pro-media-host';
+    el.setAttribute('aria-hidden', 'true');
     el.style.cssText =
-      "position:fixed;left:0;top:0;width:2px;height:2px;overflow:hidden;opacity:0.01;pointer-events:none;z-index:-1";
+      'position:fixed;left:0;top:0;width:2px;height:2px;overflow:hidden;opacity:0.01;pointer-events:none;z-index:-1';
     document.body.append(el);
   }
   return el;
 }
 
 function park(el: HTMLVideoElement): void {
-  el.style.cssText = "width:2px;height:2px";
+  el.style.cssText = 'width:2px;height:2px';
   host().append(el);
 }
 const MAX_IMAGE_SIDE = 4096;
@@ -81,21 +81,19 @@ export class MediaStore {
     return [...this.items.values()];
   }
 
-  async addFile(file: Blob, name: string, id = uid("media")): Promise<MediaItem> {
+  async addFile(file: Blob, name: string, id = uid('media')): Promise<MediaItem> {
     const type = file.type || guessType(name);
-    const item = type.startsWith("video/")
-      ? await loadVideo(file, name, id)
-      : await loadImage(file, name, id);
+    const item = type.startsWith('video/') ? await loadVideo(file, name, id) : await loadImage(file, name, id);
     this.items.set(item.id, item);
     this.emit();
-    if (item.kind === "video") void this.decodeSound(item);
+    if (item.kind === 'video') void this.decodeSound(item);
     return item;
   }
 
   addCanvas(canvas: HTMLCanvasElement, name: string): MediaItem {
     const item: MediaItem = {
-      id: uid("media"),
-      kind: "image",
+      id: uid('media'),
+      kind: 'image',
       name,
       el: canvas,
       width: canvas.width,
@@ -111,23 +109,22 @@ export class MediaStore {
   }
 
   async addWebcam(): Promise<MediaItem> {
-    if (!navigator.mediaDevices?.getUserMedia)
-      throw new Error("This browser has no camera access.");
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('This browser has no camera access.');
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { width: 1280, height: 720 },
       audio: false,
     });
-    const el = document.createElement("video");
+    const el = document.createElement('video');
     el.muted = true;
     el.playsInline = true;
     el.srcObject = stream;
     park(el);
     await el.play();
-    await waitFor(el, "loadeddata", () => el.readyState >= 2);
+    await waitFor(el, 'loadeddata', () => el.readyState >= 2);
     const item: MediaItem = {
-      id: uid("media"),
-      kind: "webcam",
-      name: "Webcam",
+      id: uid('media'),
+      kind: 'webcam',
+      name: 'Webcam',
       el,
       width: el.videoWidth || 1280,
       height: el.videoHeight || 720,
@@ -146,7 +143,7 @@ export class MediaStore {
   async clone(id: string): Promise<MediaItem | undefined> {
     const src = this.items.get(id);
     if (!src) return undefined;
-    if (src.kind === "image" || !src.blob) return src;
+    if (src.kind === 'image' || !src.blob) return src;
     const copy = await this.addFile(src.blob, src.name);
     copy.envelope = src.envelope;
     copy.audio = src.audio;
@@ -189,7 +186,7 @@ export class MediaStore {
 function release(item: MediaItem): void {
   if (item.el instanceof HTMLVideoElement) {
     item.el.pause();
-    item.el.removeAttribute("src");
+    item.el.removeAttribute('src');
     item.el.srcObject = null;
     item.el.load();
     item.el.remove();
@@ -199,49 +196,44 @@ function release(item: MediaItem): void {
 }
 
 function guessType(name: string): string {
-  const ext = name.toLowerCase().split(".").pop() ?? "";
-  if (["mp4", "m4v", "mov", "webm", "mkv", "ogv", "avi"].includes(ext))
-    return `video/${ext === "mov" ? "quicktime" : ext}`;
+  const ext = name.toLowerCase().split('.').pop() ?? '';
+  if (['mp4', 'm4v', 'mov', 'webm', 'mkv', 'ogv', 'avi'].includes(ext))
+    return `video/${ext === 'mov' ? 'quicktime' : ext}`;
   return `image/${ext}`;
 }
 
-function waitFor(
-  el: HTMLMediaElement,
-  event: string,
-  ready: () => boolean,
-  ms = 20000,
-): Promise<void> {
+function waitFor(el: HTMLMediaElement, event: string, ready: () => boolean, ms = 20000): Promise<void> {
   if (ready()) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const done = () => {
       clearTimeout(timer);
       el.removeEventListener(event, done);
-      el.removeEventListener("error", fail);
+      el.removeEventListener('error', fail);
       resolve();
     };
     const fail = () => {
       clearTimeout(timer);
       el.removeEventListener(event, done);
-      el.removeEventListener("error", fail);
-      reject(new Error("This browser can’t play that video. Try an MP4 (H.264) or WebM."));
+      el.removeEventListener('error', fail);
+      reject(new Error('This browser can’t play that video. Try an MP4 (H.264) or WebM.'));
     };
     const timer = setTimeout(fail, ms);
     el.addEventListener(event, done);
-    el.addEventListener("error", fail);
+    el.addEventListener('error', fail);
   });
 }
 
 async function loadVideo(file: Blob, name: string, id: string): Promise<MediaItem> {
   const url = URL.createObjectURL(file);
-  const el = document.createElement("video");
+  const el = document.createElement('video');
   el.muted = true;
   el.playsInline = true;
-  el.preload = "auto";
+  el.preload = 'auto';
   el.loop = false;
   el.src = url;
   park(el);
   try {
-    await waitFor(el, "loadeddata", () => el.readyState >= 2);
+    await waitFor(el, 'loadeddata', () => el.readyState >= 2);
   } catch (e) {
     el.remove();
     URL.revokeObjectURL(url);
@@ -250,7 +242,7 @@ async function loadVideo(file: Blob, name: string, id: string): Promise<MediaIte
   const duration = await knownDuration(el);
   const item: MediaItem = {
     id,
-    kind: "video",
+    kind: 'video',
     name,
     blob: file,
     el,
@@ -263,8 +255,8 @@ async function loadVideo(file: Blob, name: string, id: string): Promise<MediaIte
     url,
   };
   const bump = () => item.seq++;
-  el.addEventListener("seeked", bump);
-  el.addEventListener("loadeddata", bump);
+  el.addEventListener('seeked', bump);
+  el.addEventListener('loadeddata', bump);
   return item;
 }
 
@@ -278,20 +270,20 @@ async function knownDuration(el: HTMLVideoElement): Promise<number> {
     const timer = setTimeout(done, 4000);
     function done() {
       clearTimeout(timer);
-      el.removeEventListener("durationchange", check);
+      el.removeEventListener('durationchange', check);
       resolve();
     }
     function check() {
       if (Number.isFinite(el.duration)) done();
     }
-    el.addEventListener("durationchange", check);
+    el.addEventListener('durationchange', check);
     el.currentTime = 1e7;
   });
   const d = Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 10;
   await new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, 2000);
     el.addEventListener(
-      "seeked",
+      'seeked',
       () => {
         clearTimeout(timer);
         resolve();
@@ -309,7 +301,7 @@ async function loadImage(file: Blob, name: string, id: string): Promise<MediaIte
   let h: number;
   let close = () => {};
   try {
-    const bmp = await createImageBitmap(file, { imageOrientation: "from-image" });
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
     source = bmp;
     w = bmp.width;
     h = bmp.height;
@@ -330,16 +322,16 @@ async function loadImage(file: Blob, name: string, id: string): Promise<MediaIte
     }
   }
   const k = Math.min(1, MAX_IMAGE_SIDE / Math.max(w, h));
-  const canvas = document.createElement("canvas");
+  const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(w * k));
   canvas.height = Math.max(1, Math.round(h * k));
-  const ctx = canvas.getContext("2d")!;
-  ctx.imageSmoothingQuality = "high";
+  const ctx = canvas.getContext('2d')!;
+  ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
   close();
   return {
     id,
-    kind: "image",
+    kind: 'image',
     name,
     blob: file,
     el: canvas,
